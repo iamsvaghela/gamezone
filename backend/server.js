@@ -7,21 +7,38 @@ require('dotenv').config();
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' 
+    ? ['https://*.railway.app', 'https://*.up.railway.app'] 
+    : ['http://localhost:5173', 'http://localhost:3000'],
+  credentials: true
+}));
 app.use(express.json());
 
 // Database Connection
+console.log('🔄 Connecting to MongoDB...');
+console.log('🔗 MongoDB URI:', process.env.MONGODB_URI ? 'Set (hidden for security)' : 'NOT SET');
+console.log('🌐 Environment:', process.env.NODE_ENV || 'development');
+
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/gamezone', {
   useNewUrlParser: true,
   useUnifiedTopology: true
 });
 
 mongoose.connection.on('connected', () => {
-  console.log('✅ Connected to MongoDB');
+  console.log('✅ Connected to MongoDB successfully!');
+  console.log('🌐 Database:', mongoose.connection.name);
 });
 
 mongoose.connection.on('error', (err) => {
-  console.error('❌ MongoDB connection error:', err);
+  console.error('❌ MongoDB connection error:', err.message);
+  if (process.env.NODE_ENV === 'development') {
+    console.error('🔧 Full error:', err);
+  }
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('⚠️  MongoDB disconnected');
 });
 
 // API Routes
@@ -30,13 +47,15 @@ app.use('/api/gamezones', require('./routes/gamezones'));
 app.use('/api/bookings', require('./routes/bookings'));
 app.use('/api/vendor', require('./routes/vendor'));
 
-// Health check (for Railway deployment)
+// Health check
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
     message: 'GameZone API is running!',
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
+    port: process.env.PORT || 3000
   });
 });
 
@@ -45,11 +64,12 @@ if (process.env.NODE_ENV === 'production') {
   // Serve static files from the React app build directory
   app.use(express.static(path.join(__dirname, '../frontend/dist')));
 
-  // API documentation route (only show in development or if specifically requested)
+  // API documentation route
   app.get('/api', (req, res) => {
     res.json({ 
       message: '🎮 GameZone API Documentation',
       version: '1.0.0',
+      environment: 'production',
       endpoints: {
         health: 'GET /health',
         auth: {
@@ -88,7 +108,19 @@ if (process.env.NODE_ENV === 'production') {
       message: '🎮 Welcome to GameZone API!',
       version: '1.0.0',
       mode: 'development',
-      note: 'This is the backend API. Frontend should be running on port 5173',
+      note: 'This is the backend API running locally',
+      frontend: 'Frontend should be running on http://localhost:5173',
+      health: 'GET /health for health check',
+      docs: 'GET /api for API documentation'
+    });
+  });
+
+  // Development API documentation
+  app.get('/api', (req, res) => {
+    res.json({ 
+      message: '🎮 GameZone API Documentation',
+      version: '1.0.0',
+      environment: 'development',
       endpoints: {
         health: 'GET /health',
         auth: {
@@ -139,10 +171,12 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`📊 Database status: ${mongoose.connection.readyState === 1 ? 'Connected' : 'Connecting...'}`);
+  
   if (process.env.NODE_ENV === 'production') {
     console.log(`🎮 GameZone app: http://localhost:${PORT}`);
   } else {
-    console.log(`🔧 API docs: http://localhost:${PORT}/`);
+    console.log(`🔧 API docs: http://localhost:${PORT}/api`);
     console.log(`🎮 Frontend should be running on: http://localhost:5173`);
   }
 });

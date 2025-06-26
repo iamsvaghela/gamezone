@@ -1,0 +1,18 @@
+# Railway ignore file
+.git/
+node_modules/
+.DS_Store
+*.log
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.vscode/
+.idea/
+*.tmp
+*.temp
+
+# Keep these for Railway:
+# .env files in subdirectories
+# package.json files
+# railway.json
