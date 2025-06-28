@@ -8,12 +8,7 @@ const app = express();
 
 // Middleware - FIXED CORS Configuration
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? [
-        'https://frontend-production-88da.up.railway.app',
-        'https://gamezone-production.up.railway.app'
-      ] 
-    : ['http://localhost:5173', 'http://localhost:3000'],
+  origin: true,
   credentials: true
 }));
 app.use(express.json());
