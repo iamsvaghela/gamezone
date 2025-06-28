@@ -6,10 +6,13 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware
+// Middleware - FIXED CORS Configuration
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
-    ? ['https://*.railway.app', 'https://*.up.railway.app'] 
+    ? [
+        'https://frontend-production-88da.up.railway.app',
+        'https://gamezone-production.up.railway.app'
+      ] 
     : ['http://localhost:5173', 'http://localhost:3000'],
   credentials: true
 }));
