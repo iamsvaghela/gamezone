@@ -1,15 +1,15 @@
 // src/services/api.js
 
 // API base URL configuration
-// In production (Railway), API and frontend are served from same domain
-// In development, frontend runs on :5173, backend on :3000
-const API_BASE_URL = import.meta.env.VITE_API_URL || 
-  (import.meta.env.PROD ? '/api' : 'http://localhost:3000/api');
+// Always use VITE_API_URL in production, fallback to localhost in development
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 
 class ApiService {
   constructor() {
     this.baseURL = API_BASE_URL;
     console.log('🔧 API Base URL:', this.baseURL);
+    console.log('🔧 Environment:', import.meta.env.PROD ? 'production' : 'development');
+    console.log('🔧 VITE_API_URL:', import.meta.env.VITE_API_URL);
   }
 
   // Get auth token from localStorage
@@ -176,8 +176,10 @@ class ApiService {
   // Health check for debugging
   async healthCheck() {
     try {
-      // Health check doesn't need /api prefix
-      const healthUrl = import.meta.env.PROD ? '/health' : 'http://localhost:3000/health';
+      // Use the same base URL but without /api suffix for health check
+      const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      const healthUrl = `${baseUrl}/health`;
+      console.log('🏥 Health check URL:', healthUrl);
       const response = await fetch(healthUrl);
       return await response.json();
     } catch (error) {
