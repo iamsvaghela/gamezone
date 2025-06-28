@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "GameZone Backend API",
   "main": "server.js",
+  "seed": "node scripts/seedData.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
@@ -24,4 +25,5 @@
     "node": ">=18.0.0",
     "npm": ">=8.0.0"
   }
+  
 }
