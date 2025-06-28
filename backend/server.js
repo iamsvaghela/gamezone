@@ -6,7 +6,7 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware - FIXED CORS Configuration
+// Middleware - CORS Configuration
 app.use(cors({
   origin: true,
   credentials: true
@@ -45,6 +45,21 @@ app.use('/api/gamezones', require('./routes/gamezones'));
 app.use('/api/bookings', require('./routes/bookings'));
 app.use('/api/vendor', require('./routes/vendor'));
 
+// Root route - API info
+app.get('/', (req, res) => {
+  res.json({ 
+    message: '🎮 GameZone API',
+    version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development',
+    status: 'running',
+    frontend: 'https://frontend-production-88da.up.railway.app',
+    endpoints: {
+      health: '/health',
+      docs: '/api'
+    }
+  });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ 
@@ -57,95 +72,39 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Serve static files from React app (only in production)
-if (process.env.NODE_ENV === 'production') {
-  // Serve static files from the React app build directory
-  app.use(express.static(path.join(__dirname, '../frontend/dist')));
-
-  // API documentation route
-  app.get('/api', (req, res) => {
-    res.json({ 
-      message: '🎮 GameZone API Documentation',
-      version: '1.0.0',
-      environment: 'production',
-      endpoints: {
-        health: 'GET /health',
-        auth: {
-          login: 'POST /api/auth/login',
-          register: 'POST /api/auth/register',
-          profile: 'GET /api/auth/profile'
-        },
-        gamezones: {
-          list: 'GET /api/gamezones',
-          details: 'GET /api/gamezones/:id',
-          availability: 'GET /api/gamezones/:id/availability'
-        },
-        bookings: {
-          create: 'POST /api/bookings',
-          list: 'GET /api/bookings',
-          details: 'GET /api/bookings/:id',
-          cancel: 'PUT /api/bookings/:id/cancel'
-        },
-        vendor: {
-          dashboard: 'GET /api/vendor/dashboard',
-          bookings: 'GET /api/vendor/bookings',
-          analytics: 'GET /api/vendor/analytics'
-        }
+// API documentation route
+app.get('/api', (req, res) => {
+  res.json({ 
+    message: '🎮 GameZone API Documentation',
+    version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development',
+    frontend: 'https://frontend-production-88da.up.railway.app',
+    endpoints: {
+      health: 'GET /health',
+      auth: {
+        login: 'POST /api/auth/login',
+        register: 'POST /api/auth/register',
+        profile: 'GET /api/auth/profile'
+      },
+      gamezones: {
+        list: 'GET /api/gamezones',
+        details: 'GET /api/gamezones/:id',
+        availability: 'GET /api/gamezones/:id/availability'
+      },
+      bookings: {
+        create: 'POST /api/bookings',
+        list: 'GET /api/bookings',
+        details: 'GET /api/bookings/:id',
+        cancel: 'PUT /api/bookings/:id/cancel'
+      },
+      vendor: {
+        dashboard: 'GET /api/vendor/dashboard',
+        bookings: 'GET /api/vendor/bookings',
+        analytics: 'GET /api/vendor/analytics'
       }
-    });
+    }
   });
-
-  // Handle React routing - return all requests to React app
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
-  });
-} else {
-  // Development mode - show API documentation on root
-  app.get('/', (req, res) => {
-    res.json({ 
-      message: '🎮 Welcome to GameZone API!',
-      version: '1.0.0',
-      mode: 'development',
-      note: 'This is the backend API running locally',
-      frontend: 'Frontend should be running on http://localhost:5173',
-      health: 'GET /health for health check',
-      docs: 'GET /api for API documentation'
-    });
-  });
-
-  // Development API documentation
-  app.get('/api', (req, res) => {
-    res.json({ 
-      message: '🎮 GameZone API Documentation',
-      version: '1.0.0',
-      environment: 'development',
-      endpoints: {
-        health: 'GET /health',
-        auth: {
-          login: 'POST /api/auth/login',
-          register: 'POST /api/auth/register',
-          profile: 'GET /api/auth/profile'
-        },
-        gamezones: {
-          list: 'GET /api/gamezones',
-          details: 'GET /api/gamezones/:id',
-          availability: 'GET /api/gamezones/:id/availability'
-        },
-        bookings: {
-          create: 'POST /api/bookings',
-          list: 'GET /api/bookings',
-          details: 'GET /api/bookings/:id',
-          cancel: 'PUT /api/bookings/:id/cancel'
-        },
-        vendor: {
-          dashboard: 'GET /api/vendor/dashboard',
-          bookings: 'GET /api/vendor/bookings',
-          analytics: 'GET /api/vendor/analytics'
-        }
-      }
-    });
-  });
-}
+});
 
 // 404 handler for API routes
 app.use('/api/*', (req, res) => {
@@ -170,11 +129,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📊 Database status: ${mongoose.connection.readyState === 1 ? 'Connected' : 'Connecting...'}`);
-  
-  if (process.env.NODE_ENV === 'production') {
-    console.log(`🎮 GameZone app: http://localhost:${PORT}`);
-  } else {
-    console.log(`🔧 API docs: http://localhost:${PORT}/api`);
-    console.log(`🎮 Frontend should be running on: http://localhost:5173`);
-  }
+  console.log(`🔧 API docs: http://localhost:${PORT}/api`);
+  console.log(`🎮 Frontend: https://frontend-production-88da.up.railway.app`);
 });
