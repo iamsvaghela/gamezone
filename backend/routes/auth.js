@@ -13,6 +13,12 @@ const generateToken = (userId) => {
   );
 };
 
+// Helper function to generate random password for Google users
+function generateRandomPassword() {
+  const crypto = require('crypto');
+  return crypto.randomBytes(32).toString('hex');
+}
+
 // POST /api/auth/register - Register new user
 router.post('/register', async (req, res) => {
   try {
@@ -21,6 +27,7 @@ router.post('/register', async (req, res) => {
     // Validate required fields
     if (!name || !email || !password) {
       return res.status(400).json({ 
+        success: false,
         error: 'Name, email, and password are required' 
       });
     }
@@ -29,6 +36,7 @@ router.post('/register', async (req, res) => {
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ 
+        success: false,
         error: 'User with this email already exists' 
       });
     }
@@ -48,6 +56,7 @@ router.post('/register', async (req, res) => {
     const token = generateToken(user._id);
 
     res.status(201).json({
+      success: true,
       message: 'User registered successfully',
       token,
       user: {
@@ -55,7 +64,9 @@ router.post('/register', async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
-        phone: user.phone
+        phone: user.phone,
+        profileImage: user.profileImage,
+        isVerified: user.isVerified
       }
     });
 
@@ -64,6 +75,7 @@ router.post('/register', async (req, res) => {
     
     if (error.code === 11000) {
       return res.status(400).json({ 
+        success: false,
         error: 'Email already exists' 
       });
     }
@@ -71,12 +83,14 @@ router.post('/register', async (req, res) => {
     if (error.name === 'ValidationError') {
       const errors = Object.values(error.errors).map(e => e.message);
       return res.status(400).json({ 
+        success: false,
         error: 'Validation failed', 
         details: errors 
       });
     }
 
     res.status(500).json({ 
+      success: false,
       error: 'Server error during registration' 
     });
   }
@@ -90,6 +104,7 @@ router.post('/login', async (req, res) => {
     // Validate required fields
     if (!email || !password) {
       return res.status(400).json({ 
+        success: false,
         error: 'Email and password are required' 
       });
     }
@@ -98,6 +113,7 @@ router.post('/login', async (req, res) => {
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(401).json({ 
+        success: false,
         error: 'Invalid email or password' 
       });
     }
@@ -105,6 +121,7 @@ router.post('/login', async (req, res) => {
     // Check if account is active
     if (!user.isActive) {
       return res.status(401).json({ 
+        success: false,
         error: 'Account is deactivated. Please contact support.' 
       });
     }
@@ -113,14 +130,19 @@ router.post('/login', async (req, res) => {
     const isPasswordMatch = await user.comparePassword(password);
     if (!isPasswordMatch) {
       return res.status(401).json({ 
+        success: false,
         error: 'Invalid email or password' 
       });
     }
+
+    // Update last login
+    await user.updateLastLogin();
 
     // Generate token
     const token = generateToken(user._id);
 
     res.json({
+      success: true,
       message: 'Login successful',
       token,
       user: {
@@ -128,14 +150,136 @@ router.post('/login', async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
-        phone: user.phone
+        phone: user.phone,
+        profileImage: user.profileImage,
+        isVerified: user.isVerified
       }
     });
 
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ 
+      success: false,
       error: 'Server error during login' 
+    });
+  }
+});
+
+// POST /api/auth/google - Google OAuth login/registration
+router.post('/google', async (req, res) => {
+  try {
+    console.log('📱 Google auth attempt:', { ...req.body, googleId: '[HIDDEN]' });
+
+    const { googleId, email, name, profileImage, role = 'user', isVerified = true } = req.body;
+
+    // Validate required fields
+    if (!googleId || !email || !name) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required Google user information'
+      });
+    }
+
+    // Check if user exists by email first
+    let existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+    let isNewUser = false;
+
+    if (existingUser) {
+      // User exists - check if Google account is already linked
+      if (existingUser.socialMedia?.google?.id && existingUser.socialMedia.google.id !== googleId) {
+        return res.status(409).json({
+          success: false,
+          error: 'This email is already registered with a different Google account'
+        });
+      }
+
+      // Link Google account if not already linked
+      if (!existingUser.socialMedia?.google?.id) {
+        existingUser.socialMedia = {
+          ...existingUser.socialMedia,
+          google: {
+            id: googleId,
+            email: email
+          }
+        };
+      }
+
+      // Update user info from Google (in case it changed)
+      existingUser.name = name;
+      existingUser.isVerified = isVerified;
+      
+      if (profileImage && !existingUser.profileImage) {
+        existingUser.profileImage = profileImage;
+      }
+
+      await existingUser.updateLastLogin();
+      await existingUser.save();
+      console.log('✅ Existing user logged in with Google:', existingUser.email);
+
+    } else {
+      // Create new user with Google account
+      isNewUser = true;
+      
+      existingUser = new User({
+        name: name.trim(),
+        email: email.toLowerCase().trim(),
+        password: generateRandomPassword(), // Generate a random password for Google users
+        role: role,
+        isVerified: isVerified,
+        profileImage: profileImage,
+        socialMedia: {
+          google: {
+            id: googleId,
+            email: email
+          }
+        },
+        lastLogin: new Date()
+      });
+
+      await existingUser.save();
+      console.log('✅ New user created with Google:', existingUser.email);
+    }
+
+    // Generate JWT token
+    const token = generateToken(existingUser._id);
+
+    res.status(200).json({
+      success: true,
+      message: isNewUser ? 'Account created successfully with Google' : 'Google login successful',
+      token,
+      user: {
+        id: existingUser._id,
+        name: existingUser.name,
+        email: existingUser.email,
+        role: existingUser.role,
+        phone: existingUser.phone,
+        profileImage: existingUser.profileImage,
+        isVerified: existingUser.isVerified
+      },
+      isNewUser
+    });
+
+  } catch (error) {
+    console.error('❌ Google auth error:', error);
+
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        error: 'An account with this email already exists'
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid user data',
+        details: Object.values(error.errors).map(e => e.message)
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'Google authentication failed. Please try again.'
     });
   }
 });
@@ -146,24 +290,30 @@ router.get('/profile', auth, async (req, res) => {
     const user = await User.findById(req.user.userId);
     if (!user) {
       return res.status(404).json({ 
+        success: false,
         error: 'User not found' 
       });
     }
 
     res.json({
+      success: true,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
         phone: user.phone,
-        createdAt: user.createdAt
+        profileImage: user.profileImage,
+        isVerified: user.isVerified,
+        createdAt: user.createdAt,
+        lastLogin: user.lastLogin
       }
     });
 
   } catch (error) {
     console.error('Profile fetch error:', error);
     res.status(500).json({ 
+      success: false,
       error: 'Server error fetching profile' 
     });
   }
@@ -186,18 +336,22 @@ router.put('/profile', auth, async (req, res) => {
 
     if (!user) {
       return res.status(404).json({ 
+        success: false,
         error: 'User not found' 
       });
     }
 
     res.json({
+      success: true,
       message: 'Profile updated successfully',
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
-        phone: user.phone
+        phone: user.phone,
+        profileImage: user.profileImage,
+        isVerified: user.isVerified
       }
     });
 
@@ -207,12 +361,14 @@ router.put('/profile', auth, async (req, res) => {
     if (error.name === 'ValidationError') {
       const errors = Object.values(error.errors).map(e => e.message);
       return res.status(400).json({ 
+        success: false,
         error: 'Validation failed', 
         details: errors 
       });
     }
 
     res.status(500).json({ 
+      success: false,
       error: 'Server error updating profile' 
     });
   }
@@ -225,6 +381,7 @@ router.post('/change-password', auth, async (req, res) => {
 
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ 
+        success: false,
         error: 'Current password and new password are required' 
       });
     }
@@ -232,7 +389,16 @@ router.post('/change-password', auth, async (req, res) => {
     const user = await User.findById(req.user.userId);
     if (!user) {
       return res.status(404).json({ 
+        success: false,
         error: 'User not found' 
+      });
+    }
+
+    // Check if user has a password (Google users might not have one initially)
+    if (!user.password) {
+      return res.status(400).json({
+        success: false,
+        error: 'No password is set for this account. Please contact support.'
       });
     }
 
@@ -240,6 +406,7 @@ router.post('/change-password', auth, async (req, res) => {
     const isCurrentPasswordValid = await user.comparePassword(currentPassword);
     if (!isCurrentPasswordValid) {
       return res.status(401).json({ 
+        success: false,
         error: 'Current password is incorrect' 
       });
     }
@@ -249,6 +416,7 @@ router.post('/change-password', auth, async (req, res) => {
     await user.save();
 
     res.json({
+      success: true,
       message: 'Password changed successfully'
     });
 
@@ -258,13 +426,36 @@ router.post('/change-password', auth, async (req, res) => {
     if (error.name === 'ValidationError') {
       const errors = Object.values(error.errors).map(e => e.message);
       return res.status(400).json({ 
+        success: false,
         error: 'Validation failed', 
         details: errors 
       });
     }
 
     res.status(500).json({ 
+      success: false,
       error: 'Server error changing password' 
+    });
+  }
+});
+
+// POST /api/auth/logout - Logout user
+router.post('/logout', auth, async (req, res) => {
+  try {
+    // In a simple JWT implementation, logout is handled client-side
+    // You could implement token blacklisting here if needed
+    
+    console.log('👋 User logged out:', req.user.userId);
+    
+    res.json({
+      success: true,
+      message: 'Logout successful'
+    });
+  } catch (error) {
+    console.error('❌ Logout error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Logout failed'
     });
   }
 });

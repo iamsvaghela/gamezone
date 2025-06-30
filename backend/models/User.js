@@ -18,7 +18,10 @@ const userSchema = new mongoose.Schema({
   },
   password: {
     type: String,
-    required: [true, 'Password is required'],
+    required: function() {
+      // Password is not required if user has Google account linked
+      return !this.socialMedia?.google?.id;
+    },
     minlength: [6, 'Password must be at least 6 characters']
   },
   role: {
@@ -30,9 +33,36 @@ const userSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  profileImage: {
+    type: String,
+    default: null
+  },
+  isVerified: {
+    type: Boolean,
+    default: false
+  },
   isActive: {
     type: Boolean,
     default: true
+  },
+  // Social media integration
+  socialMedia: {
+    google: {
+      id: String,
+      email: String
+    },
+    facebook: {
+      id: String,
+      email: String
+    },
+    apple: {
+      id: String,
+      email: String
+    }
+  },
+  lastLogin: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true
@@ -40,12 +70,12 @@ const userSchema = new mongoose.Schema({
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {
-  // Only hash if password is modified
-  if (!this.isModified('password')) return next();
+  // Only hash if password is modified and exists
+  if (!this.isModified('password') || !this.password) return next();
   
   try {
-    // Hash password with cost of 10
-    const salt = await bcrypt.genSalt(10);
+    // Hash password with cost of 12
+    const salt = await bcrypt.genSalt(12);
     this.password = await bcrypt.hash(this.password, salt);
     next();
   } catch (error) {
@@ -56,17 +86,33 @@ userSchema.pre('save', async function(next) {
 // Compare password method
 userSchema.methods.comparePassword = async function(candidatePassword) {
   try {
+    if (!this.password) {
+      throw new Error('No password set for this user');
+    }
     return await bcrypt.compare(candidatePassword, this.password);
   } catch (error) {
     throw error;
   }
 };
 
-// Convert to JSON and remove password
+// Update last login
+userSchema.methods.updateLastLogin = function() {
+  this.lastLogin = new Date();
+  return this.save();
+};
+
+// Convert to JSON and remove sensitive data
 userSchema.methods.toJSON = function() {
   const user = this.toObject();
   delete user.password;
+  delete user.__v;
   return user;
 };
 
-module.exports = mongoose.model('User', userSchema); 
+// Create indexes for better performance
+userSchema.index({ email: 1 }, { unique: true });
+userSchema.index({ 'socialMedia.google.id': 1 });
+userSchema.index({ role: 1 });
+userSchema.index({ isActive: 1 });
+
+module.exports = mongoose.model('User', userSchema);
