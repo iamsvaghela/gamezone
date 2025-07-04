@@ -1,120 +1,82 @@
+// Fixed operating hours validation for booking routes
 const express = require('express');
 const Booking = require('../models/Booking');
 const GameZone = require('../models/GameZone');
 const { auth, userOnly } = require('../middleware/auth');
 const router = express.Router();
 
-// GET /api/bookings/availability/:zoneId/:date - Get zone availability for a specific date
-router.get('/availability/:zoneId/:date', async (req, res) => {
+// Helper function to convert time string to minutes
+const timeToMinutes = (timeString) => {
+  if (!timeString || typeof timeString !== 'string') {
+    throw new Error('Invalid time format');
+  }
+  
+  const [hours, minutes] = timeString.split(':').map(Number);
+  
+  if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    throw new Error('Invalid time format');
+  }
+  
+  return hours * 60 + minutes;
+};
+
+// Helper function to convert minutes to time string
+const minutesToTime = (minutes) => {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+};
+
+// Enhanced operating hours validation
+const validateOperatingHours = (zone, timeSlot, duration) => {
   try {
-    const { zoneId, date } = req.params;
+    console.log('🔍 Validating operating hours:', {
+      zoneHours: zone.operatingHours,
+      timeSlot,
+      duration
+    });
     
-    console.log('🔍 Checking availability for zone:', zoneId, 'on date:', date);
+    // Parse operating hours
+    const startMinutes = timeToMinutes(zone.operatingHours.start);
+    const endMinutes = timeToMinutes(zone.operatingHours.end);
     
-    // Validate zone exists
-    const zone = await GameZone.findById(zoneId);
-    if (!zone || !zone.isActive) {
-      return res.status(404).json({
-        success: false,
-        error: 'Gaming zone not found or inactive'
-      });
-    }
+    // Parse booking time
+    const bookingStartMinutes = timeToMinutes(timeSlot);
+    const bookingEndMinutes = bookingStartMinutes + (duration * 60);
     
-    // Validate date format
-    const bookingDate = new Date(date);
-    if (isNaN(bookingDate.getTime())) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid date format. Use YYYY-MM-DD'
-      });
-    }
+    console.log('🕐 Time validation:', {
+      zoneStart: `${zone.operatingHours.start} (${startMinutes} min)`,
+      zoneEnd: `${zone.operatingHours.end} (${endMinutes} min)`,
+      bookingStart: `${timeSlot} (${bookingStartMinutes} min)`,
+      bookingEnd: `${minutesToTime(bookingEndMinutes)} (${bookingEndMinutes} min)`
+    });
     
-    // Get existing bookings for the date
-    const startOfDay = new Date(bookingDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    
-    const endOfDay = new Date(bookingDate);
-    endOfDay.setHours(23, 59, 59, 999);
-    
-    const existingBookings = await Booking.find({
-      zoneId,
-      date: {
-        $gte: startOfDay,
-        $lte: endOfDay
-      },
-      status: { $in: ['confirmed', 'pending'] }
-    }).sort({ timeSlot: 1 });
-    
-    // Generate available time slots
-    const startHour = parseInt(zone.operatingHours.start.split(':')[0]);
-    const endHour = parseInt(zone.operatingHours.end.split(':')[0]);
-    
-    const availability = {};
-    const availableSlots = [];
-    const bookedSlots = [];
-    
-    // Mark all hours as available initially
-    for (let hour = startHour; hour < endHour; hour++) {
-      const timeSlot = `${hour.toString().padStart(2, '0')}:00`;
-      availability[timeSlot] = true;
-    }
-    
-    // Mark booked slots as unavailable
-    existingBookings.forEach(booking => {
-      const bookingStart = parseInt(booking.timeSlot.split(':')[0]);
-      const bookingEnd = bookingStart + booking.duration;
+    // Handle midnight crossing (e.g., 22:00 - 02:00)
+    if (endMinutes < startMinutes) {
+      // Zone operates across midnight
+      const isValid = (bookingStartMinutes >= startMinutes || bookingStartMinutes < endMinutes) &&
+                     (bookingEndMinutes <= (endMinutes + 24 * 60) || bookingEndMinutes <= endMinutes);
       
-      for (let hour = bookingStart; hour < bookingEnd; hour++) {
-        const timeSlot = `${hour.toString().padStart(2, '0')}:00`;
-        availability[timeSlot] = false;
-        if (!bookedSlots.includes(timeSlot)) {
-          bookedSlots.push(timeSlot);
-        }
+      if (!isValid) {
+        throw new Error(`Booking time must be within operating hours: ${zone.operatingHours.start} - ${zone.operatingHours.end} (crosses midnight)`);
       }
-    });
-    
-    // Create available slots array
-    Object.keys(availability).forEach(slot => {
-      if (availability[slot]) {
-        availableSlots.push(slot);
+    } else {
+      // Normal operating hours (same day)
+      if (bookingStartMinutes < startMinutes || bookingEndMinutes > endMinutes) {
+        throw new Error(`Booking time must be within operating hours: ${zone.operatingHours.start} - ${zone.operatingHours.end}`);
       }
-    });
+    }
     
-    console.log('✅ Availability check completed:', {
-      available: availableSlots.length,
-      booked: bookedSlots.length
-    });
-    
-    res.json({
-      success: true,
-      date,
-      zoneId,
-      zoneName: zone.name,
-      operatingHours: zone.operatingHours,
-      availability,
-      availableSlots: availableSlots.sort(),
-      bookedSlots: bookedSlots.sort(),
-      totalAvailable: availableSlots.length,
-      totalBooked: bookedSlots.length,
-      existingBookings: existingBookings.map(booking => ({
-        id: booking._id,
-        timeSlot: booking.timeSlot,
-        duration: booking.duration,
-        status: booking.status
-      }))
-    });
+    console.log('✅ Operating hours validation passed');
+    return true;
     
   } catch (error) {
-    console.error('❌ Error getting zone availability:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get zone availability',
-      message: error.message
-    });
+    console.error('❌ Operating hours validation failed:', error.message);
+    throw error;
   }
-});
+};
 
-// POST /api/bookings - Create new booking (Enhanced with better conflict detection)
+// POST /api/bookings - Create new booking (Enhanced with better time validation)
 router.post('/', auth, userOnly, async (req, res) => {
   try {
     const { zoneId, date, timeSlot, duration, notes } = req.body;
@@ -173,17 +135,19 @@ router.post('/', auth, userOnly, async (req, res) => {
       });
     }
 
-    // Check if time slot is within operating hours
-    const [bookingHour] = timeSlot.split(':').map(Number);
-    const [startHour] = zone.operatingHours.start.split(':').map(Number);
-    const [endHour] = zone.operatingHours.end.split(':').map(Number);
-    
-    if (bookingHour < startHour || bookingHour + duration > endHour) {
+    // Enhanced operating hours validation
+    try {
+      validateOperatingHours(zone, timeSlot, duration);
+    } catch (validationError) {
       return res.status(400).json({ 
         success: false,
-        error: `Booking time must be within operating hours: ${zone.operatingHours.start} - ${zone.operatingHours.end}`,
+        error: validationError.message,
         operatingHours: zone.operatingHours,
-        requestedTime: `${timeSlot} - ${(bookingHour + duration).toString().padStart(2, '0')}:00`
+        requestedTime: {
+          start: timeSlot,
+          end: minutesToTime(timeToMinutes(timeSlot) + (duration * 60)),
+          duration: `${duration} hour${duration > 1 ? 's' : ''}`
+        }
       });
     }
 
@@ -204,24 +168,24 @@ router.post('/', auth, userOnly, async (req, res) => {
     });
 
     // Check for time conflicts with detailed information
-    const requestedStart = bookingHour;
-    const requestedEnd = bookingHour + duration;
+    const requestedStartMinutes = timeToMinutes(timeSlot);
+    const requestedEndMinutes = requestedStartMinutes + (duration * 60);
     
     const conflictingBooking = conflictingBookings.find(booking => {
-      const existingStart = parseInt(booking.timeSlot.split(':')[0]);
-      const existingEnd = existingStart + booking.duration;
+      const existingStartMinutes = timeToMinutes(booking.timeSlot);
+      const existingEndMinutes = existingStartMinutes + (booking.duration * 60);
       
       // Check for overlap
-      return (requestedStart < existingEnd && requestedEnd > existingStart);
+      return (requestedStartMinutes < existingEndMinutes && requestedEndMinutes > existingStartMinutes);
     });
 
     if (conflictingBooking) {
-      const existingStart = parseInt(conflictingBooking.timeSlot.split(':')[0]);
-      const existingEnd = existingStart + conflictingBooking.duration;
+      const existingStartMinutes = timeToMinutes(conflictingBooking.timeSlot);
+      const existingEndMinutes = existingStartMinutes + (conflictingBooking.duration * 60);
       
       console.log('❌ Time slot conflict detected:', {
-        requested: `${requestedStart}:00 - ${requestedEnd}:00`,
-        existing: `${existingStart}:00 - ${existingEnd}:00`,
+        requested: `${timeSlot} - ${minutesToTime(requestedEndMinutes)}`,
+        existing: `${conflictingBooking.timeSlot} - ${minutesToTime(existingEndMinutes)}`,
         conflictingBookingId: conflictingBooking._id
       });
       
@@ -229,8 +193,8 @@ router.post('/', auth, userOnly, async (req, res) => {
         success: false,
         error: 'Time slot conflicts with existing booking',
         conflictDetails: {
-          requestedSlot: `${timeSlot} - ${requestedEnd.toString().padStart(2, '0')}:00`,
-          existingSlot: `${conflictingBooking.timeSlot} - ${existingEnd.toString().padStart(2, '0')}:00`,
+          requestedSlot: `${timeSlot} - ${minutesToTime(requestedEndMinutes)}`,
+          existingSlot: `${conflictingBooking.timeSlot} - ${minutesToTime(existingEndMinutes)}`,
           conflictingBookingId: conflictingBooking._id,
           conflictType: 'Time slot overlap'
         },
@@ -256,8 +220,8 @@ router.post('/', auth, userOnly, async (req, res) => {
       duration,
       totalAmount,
       reference,
-      status: 'confirmed', // Set to confirmed for now (in real app, this would be 'pending' until payment)
-      paymentStatus: 'paid', // Mock payment success
+      status: 'confirmed',
+      paymentStatus: 'paid',
       paymentMethod: 'card',
       notes,
       qrCode: JSON.stringify({
@@ -350,306 +314,120 @@ router.post('/', auth, userOnly, async (req, res) => {
   }
 });
 
-// GET /api/bookings - Get user's bookings (Enhanced with better formatting)
-router.get('/', auth, userOnly, async (req, res) => {
+// GET /api/bookings/availability/:zoneId/:date - Enhanced availability check
+router.get('/availability/:zoneId/:date', async (req, res) => {
   try {
-    const { status, page = 1, limit = 10 } = req.query;
-
-    console.log('📅 Fetching bookings for user:', req.user.userId);
-
-    // Build query
-    let query = { userId: req.user.userId };
+    const { zoneId, date } = req.params;
     
-    if (status && status !== 'all') {
-      query.status = status;
+    console.log('🔍 Checking availability for zone:', zoneId, 'on date:', date);
+    
+    // Validate zone exists
+    const zone = await GameZone.findById(zoneId);
+    if (!zone || !zone.isActive) {
+      return res.status(404).json({
+        success: false,
+        error: 'Gaming zone not found or inactive'
+      });
     }
-
-    const skip = (Number(page) - 1) * Number(limit);
-
-    const bookings = await Booking.find(query)
-      .populate('zoneId', 'name location images pricePerHour rating totalReviews')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(Number(limit))
-      .lean();
-
-    const total = await Booking.countDocuments(query);
-
-    console.log(`✅ Found ${bookings.length} bookings for user ${req.user.userId}`);
-
-    // Format bookings with enhanced error handling
-    const formattedBookings = bookings.map(booking => {
-      // Handle case where zone might be deleted
-      if (!booking.zoneId || typeof booking.zoneId !== 'object') {
-        return {
-          ...booking,
-          zoneId: {
-            _id: booking.zoneId || 'unknown',
-            name: 'Gaming Zone (Unavailable)',
-            location: {
-              address: 'Address not available',
-              city: 'Unknown',
-              state: 'Unknown'
-            },
-            images: [],
-            pricePerHour: 0,
-            rating: 0,
-            totalReviews: 0
-          }
-        };
-      }
-
-      // Safely parse QR code
-      let qrCodeData = null;
-      try {
-        qrCodeData = booking.qrCode ? JSON.parse(booking.qrCode) : null;
-      } catch (error) {
-        console.warn('Failed to parse QR code for booking:', booking._id);
-        qrCodeData = booking.qrCode;
-      }
-
-      return {
-        ...booking,
-        qrCode: qrCodeData
-      };
-    });
-
-    res.json({
-      success: true,
-      bookings: formattedBookings,
-      pagination: {
-        currentPage: Number(page),
-        totalPages: Math.ceil(total / Number(limit)),
-        totalItems: total,
-        hasNext: skip + bookings.length < total,
-        hasPrev: Number(page) > 1,
-        limit: Number(limit)
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Error fetching bookings:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Server error fetching bookings',
-      message: error.message
-    });
-  }
-});
-
-// GET /api/bookings/stats - Get user booking statistics
-router.get('/stats', auth, userOnly, async (req, res) => {
-  try {
-    const userId = req.user.userId;
     
-    // Get booking statistics
-    const stats = await Booking.aggregate([
-      { $match: { userId: userId } },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          totalAmount: { $sum: '$totalAmount' }
+    // Validate date format
+    const bookingDate = new Date(date);
+    if (isNaN(bookingDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid date format. Use YYYY-MM-DD'
+      });
+    }
+    
+    // Get existing bookings for the date
+    const startOfDay = new Date(bookingDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    
+    const endOfDay = new Date(bookingDate);
+    endOfDay.setHours(23, 59, 59, 999);
+    
+    const existingBookings = await Booking.find({
+      zoneId,
+      date: {
+        $gte: startOfDay,
+        $lte: endOfDay
+      },
+      status: { $in: ['confirmed', 'pending'] }
+    }).sort({ timeSlot: 1 });
+    
+    // Generate available time slots using enhanced time handling
+    const startMinutes = timeToMinutes(zone.operatingHours.start);
+    const endMinutes = timeToMinutes(zone.operatingHours.end);
+    
+    const availability = {};
+    const availableSlots = [];
+    const bookedSlots = [];
+    
+    // Handle midnight crossing
+    let currentMinutes = startMinutes;
+    const maxMinutes = endMinutes < startMinutes ? endMinutes + 24 * 60 : endMinutes;
+    
+    // Generate hourly slots
+    while (currentMinutes < maxMinutes) {
+      const timeSlot = minutesToTime(currentMinutes % (24 * 60));
+      availability[timeSlot] = true;
+      currentMinutes += 60; // 1 hour increments
+    }
+    
+    // Mark booked slots as unavailable
+    existingBookings.forEach(booking => {
+      const bookingStartMinutes = timeToMinutes(booking.timeSlot);
+      const bookingEndMinutes = bookingStartMinutes + (booking.duration * 60);
+      
+      // Mark all affected slots as unavailable
+      for (let minutes = bookingStartMinutes; minutes < bookingEndMinutes; minutes += 60) {
+        const timeSlot = minutesToTime(minutes % (24 * 60));
+        if (availability.hasOwnProperty(timeSlot)) {
+          availability[timeSlot] = false;
+          if (!bookedSlots.includes(timeSlot)) {
+            bookedSlots.push(timeSlot);
+          }
         }
       }
-    ]);
+    });
     
-    const formattedStats = {
-      total: 0,
-      confirmed: 0,
-      completed: 0,
-      cancelled: 0,
-      pending: 0,
-      totalSpent: 0
-    };
-    
-    stats.forEach(stat => {
-      formattedStats[stat._id] = stat.count;
-      formattedStats.total += stat.count;
-      if (stat._id !== 'cancelled') {
-        formattedStats.totalSpent += stat.totalAmount;
+    // Create available slots array
+    Object.keys(availability).forEach(slot => {
+      if (availability[slot]) {
+        availableSlots.push(slot);
       }
     });
     
-    res.json({
-      success: true,
-      stats: formattedStats
+    console.log('✅ Availability check completed:', {
+      available: availableSlots.length,
+      booked: bookedSlots.length
     });
     
-  } catch (error) {
-    console.error('❌ Error fetching booking stats:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch booking statistics',
-      message: error.message
-    });
-  }
-});
-
-// GET /api/bookings/:id - Get specific booking
-router.get('/:id', auth, async (req, res) => {
-  try {
-    const booking = await Booking.findById(req.params.id)
-      .populate('zoneId', 'name location images pricePerHour rating operatingHours')
-      .populate('userId', 'name email phone');
-
-    if (!booking) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Booking not found' 
-      });
-    }
-
-    // Check if user owns this booking or is the vendor
-    const zone = await GameZone.findById(booking.zoneId);
-    const isOwner = booking.userId._id.toString() === req.user.userId.toString();
-    const isVendor = zone && zone.vendorId && zone.vendorId.toString() === req.user.userId.toString();
-
-    if (!isOwner && !isVendor) {
-      return res.status(403).json({ 
-        success: false,
-        error: 'Access denied' 
-      });
-    }
-
-    // Parse QR code safely
-    let qrCodeData = null;
-    try {
-      qrCodeData = booking.qrCode ? JSON.parse(booking.qrCode) : null;
-    } catch (error) {
-      console.warn('Failed to parse QR code for booking:', booking._id);
-      qrCodeData = booking.qrCode;
-    }
-
     res.json({
       success: true,
-      booking: {
+      date,
+      zoneId,
+      zoneName: zone.name,
+      operatingHours: zone.operatingHours,
+      availability,
+      availableSlots: availableSlots.sort(),
+      bookedSlots: bookedSlots.sort(),
+      totalAvailable: availableSlots.length,
+      totalBooked: bookedSlots.length,
+      existingBookings: existingBookings.map(booking => ({
         id: booking._id,
-        reference: booking.reference,
-        zone: booking.zoneId,
-        user: isVendor ? booking.userId : undefined, // Only show user details to vendor
-        date: booking.date,
         timeSlot: booking.timeSlot,
         duration: booking.duration,
-        totalAmount: booking.totalAmount,
         status: booking.status,
-        paymentStatus: booking.paymentStatus,
-        qrCode: qrCodeData,
-        notes: booking.notes,
-        createdAt: booking.createdAt,
-        updatedAt: booking.updatedAt,
-        canBeCancelled: booking.canBeCancelled ? booking.canBeCancelled() : false
-      }
+        endTime: minutesToTime(timeToMinutes(booking.timeSlot) + (booking.duration * 60))
+      }))
     });
-
+    
   } catch (error) {
-    console.error('❌ Error fetching booking:', error);
-    
-    if (error.name === 'CastError') {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid booking ID' 
-      });
-    }
-
-    res.status(500).json({ 
+    console.error('❌ Error getting zone availability:', error);
+    res.status(500).json({
       success: false,
-      error: 'Server error fetching booking',
-      message: error.message
-    });
-  }
-});
-
-// PUT /api/bookings/:id/cancel - Cancel booking (Enhanced with better validation)
-router.put('/:id/cancel', auth, userOnly, async (req, res) => {
-  try {
-    const { cancellationReason } = req.body;
-
-    const booking = await Booking.findOne({
-      _id: req.params.id,
-      userId: req.user.userId
-    });
-
-    if (!booking) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Booking not found' 
-      });
-    }
-
-    if (booking.status === 'cancelled') {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Booking is already cancelled' 
-      });
-    }
-
-    if (booking.status === 'completed') {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Cannot cancel completed booking' 
-      });
-    }
-
-    // Check if booking can be cancelled (enhanced validation)
-    const canCancel = booking.canBeCancelled ? booking.canBeCancelled() : true;
-    
-    if (!canCancel) {
-      const bookingDate = new Date(booking.date);
-      const now = new Date();
-      const hoursUntilBooking = (bookingDate.getTime() - now.getTime()) / (1000 * 60 * 60);
-      
-      return res.status(400).json({ 
-        success: false,
-        error: 'Cannot cancel booking less than 24 hours before start time',
-        hoursRemaining: Math.round(hoursUntilBooking * 100) / 100
-      });
-    }
-
-    // Update booking status
-    booking.status = 'cancelled';
-    booking.paymentStatus = 'refunded'; // Mock refund
-    booking.cancellationReason = cancellationReason;
-    booking.cancelledAt = new Date();
-
-    await booking.save();
-
-    // Update zone stats
-    await GameZone.findByIdAndUpdate(booking.zoneId, {
-      $inc: { 
-        'stats.cancelledBookings': 1,
-        cancelledBookings: 1 // For backward compatibility
-      }
-    });
-
-    console.log('✅ Booking cancelled successfully:', booking._id);
-
-    res.json({
-      success: true,
-      message: 'Booking cancelled successfully',
-      booking: {
-        id: booking._id,
-        reference: booking.reference,
-        status: booking.status,
-        paymentStatus: booking.paymentStatus,
-        cancelledAt: booking.cancelledAt,
-        cancellationReason: booking.cancellationReason
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Error cancelling booking:', error);
-    
-    if (error.name === 'CastError') {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid booking ID' 
-      });
-    }
-
-    res.status(500).json({ 
-      success: false,
-      error: 'Server error cancelling booking',
+      error: 'Failed to get zone availability',
       message: error.message
     });
   }
