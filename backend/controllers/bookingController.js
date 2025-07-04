@@ -1,8 +1,9 @@
-// controllers/bookingController.js - Fixed booking controller with proper error handling
+// controllers/bookingController.js - Enhanced with conflict resolution
 const Booking = require('../models/Booking');
 const GameZone = require('../models/GameZone');
 const User = require('../models/User');
 const { validationResult } = require('express-validator');
+const mongoose = require('mongoose');
 
 // Helper function to safely parse QR code
 const parseQRCode = (qrCodeString) => {
@@ -46,6 +47,132 @@ const formatBookingResponse = (booking) => {
   };
 };
 
+// Helper function to check time slot conflicts
+const checkTimeSlotConflict = async (zoneId, date, timeSlot, duration, excludeBookingId = null) => {
+  try {
+    const startTime = parseInt(timeSlot.split(':')[0]);
+    const endTime = startTime + duration;
+    
+    // Find overlapping bookings
+    const conflictingBookings = await Booking.find({
+      zoneId,
+      date: new Date(date),
+      status: { $in: ['confirmed', 'pending'] },
+      ...(excludeBookingId && { _id: { $ne: excludeBookingId } })
+    });
+    
+    for (const booking of conflictingBookings) {
+      const existingStart = parseInt(booking.timeSlot.split(':')[0]);
+      const existingEnd = existingStart + booking.duration;
+      
+      // Check for overlap
+      if (
+        (startTime >= existingStart && startTime < existingEnd) ||
+        (endTime > existingStart && endTime <= existingEnd) ||
+        (startTime <= existingStart && endTime >= existingEnd)
+      ) {
+        return {
+          hasConflict: true,
+          conflictingBooking: booking,
+          conflictDetails: {
+            existingSlot: `${booking.timeSlot} - ${existingEnd}:00`,
+            requestedSlot: `${timeSlot} - ${endTime}:00`,
+            conflictType: 'Time slot overlap'
+          }
+        };
+      }
+    }
+    
+    return { hasConflict: false };
+  } catch (error) {
+    console.error('Error checking time slot conflict:', error);
+    return { hasConflict: true, error: error.message };
+  }
+};
+
+// @desc    Get zone availability for a date
+// @route   GET /api/bookings/availability/:zoneId/:date
+// @access  Public
+const getZoneAvailability = async (req, res) => {
+  try {
+    const { zoneId, date } = req.params;
+    
+    console.log('🔍 Checking availability for zone:', zoneId, 'on date:', date);
+    
+    // Validate zone exists
+    const zone = await GameZone.findById(zoneId);
+    if (!zone || !zone.isActive) {
+      return res.status(404).json({
+        success: false,
+        error: 'Gaming zone not found or inactive'
+      });
+    }
+    
+    // Get existing bookings for the date
+    const existingBookings = await Booking.find({
+      zoneId,
+      date: new Date(date),
+      status: { $in: ['confirmed', 'pending'] }
+    }).sort({ timeSlot: 1 });
+    
+    // Generate available time slots
+    const startHour = parseInt(zone.operatingHours.start.split(':')[0]);
+    const endHour = parseInt(zone.operatingHours.end.split(':')[0]);
+    
+    const availability = {};
+    const availableSlots = [];
+    const bookedSlots = [];
+    
+    // Mark all hours as available initially
+    for (let hour = startHour; hour < endHour; hour++) {
+      const timeSlot = `${hour.toString().padStart(2, '0')}:00`;
+      availability[timeSlot] = true;
+    }
+    
+    // Mark booked slots as unavailable
+    existingBookings.forEach(booking => {
+      const bookingStart = parseInt(booking.timeSlot.split(':')[0]);
+      const bookingEnd = bookingStart + booking.duration;
+      
+      for (let hour = bookingStart; hour < bookingEnd; hour++) {
+        const timeSlot = `${hour.toString().padStart(2, '0')}:00`;
+        availability[timeSlot] = false;
+        if (!bookedSlots.includes(timeSlot)) {
+          bookedSlots.push(timeSlot);
+        }
+      }
+    });
+    
+    // Create available slots array
+    Object.keys(availability).forEach(slot => {
+      if (availability[slot]) {
+        availableSlots.push(slot);
+      }
+    });
+    
+    res.json({
+      success: true,
+      date,
+      zoneId,
+      zoneName: zone.name,
+      operatingHours: zone.operatingHours,
+      availability,
+      availableSlots: availableSlots.sort(),
+      bookedSlots: bookedSlots.sort(),
+      totalAvailable: availableSlots.length,
+      totalBooked: bookedSlots.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting zone availability:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get zone availability',
+      message: error.message
+    });
+  }
+};
+
 // @desc    Get user bookings
 // @route   GET /api/bookings
 // @access  Private
@@ -70,7 +197,6 @@ const getUserBookings = async (req, res) => {
       .populate({
         path: 'zoneId',
         select: 'name location images pricePerHour rating totalReviews',
-        // Handle case where zone might be deleted
         options: { 
           strictPopulate: false,
           lean: false 
@@ -159,6 +285,159 @@ const getUserBookings = async (req, res) => {
   }
 };
 
+// @desc    Create new booking with conflict detection
+// @route   POST /api/bookings
+// @access  Private
+const createBooking = async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation failed',
+        details: errors.array()
+      });
+    }
+    
+    const { zoneId, date, timeSlot, duration, notes } = req.body;
+    const userId = req.user.id;
+    
+    console.log('🔄 Creating booking:', { zoneId, date, timeSlot, duration, userId });
+    
+    // Verify zone exists and is active
+    const zone = await GameZone.findById(zoneId);
+    if (!zone || !zone.isActive) {
+      return res.status(404).json({
+        success: false,
+        error: 'Gaming zone not found or inactive'
+      });
+    }
+    
+    // Check for time slot conflicts
+    const conflictCheck = await checkTimeSlotConflict(zoneId, date, timeSlot, duration);
+    
+    if (conflictCheck.hasConflict) {
+      console.log('❌ Time slot conflict detected:', conflictCheck);
+      
+      return res.status(409).json({
+        success: false,
+        error: 'Time slot conflicts with existing booking',
+        conflictDetails: conflictCheck.conflictDetails,
+        suggestedAction: 'Please choose a different time slot',
+        availabilityEndpoint: `/api/bookings/availability/${zoneId}/${date}`
+      });
+    }
+    
+    // Validate booking time is within operating hours
+    const bookingHour = parseInt(timeSlot.split(':')[0]);
+    const zoneStartHour = parseInt(zone.operatingHours.start.split(':')[0]);
+    const zoneEndHour = parseInt(zone.operatingHours.end.split(':')[0]);
+    const bookingEndHour = bookingHour + duration;
+    
+    if (bookingHour < zoneStartHour || bookingEndHour > zoneEndHour) {
+      return res.status(400).json({
+        success: false,
+        error: 'Booking time is outside operating hours',
+        operatingHours: zone.operatingHours,
+        requestedTime: `${timeSlot} - ${bookingEndHour}:00`
+      });
+    }
+    
+    // Calculate total amount
+    const totalAmount = zone.calculatePrice ? zone.calculatePrice(duration, date, timeSlot) : zone.pricePerHour * duration;
+    
+    // Generate reference number
+    const reference = `GZ-${Math.random().toString(36).substr(2, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
+    
+    // Create QR code data
+    const qrData = {
+      bookingId: null, // Will be set after creation
+      reference,
+      zoneId,
+      zoneName: zone.name,
+      date,
+      timeSlot,
+      duration
+    };
+    
+    // Create booking
+    const booking = new Booking({
+      userId,
+      zoneId,
+      date: new Date(date),
+      timeSlot,
+      duration,
+      totalAmount,
+      reference,
+      notes,
+      qrCode: JSON.stringify(qrData),
+      status: 'confirmed',
+      paymentStatus: 'paid',
+      paymentMethod: 'card'
+    });
+    
+    await booking.save();
+    
+    // Update QR code with booking ID
+    qrData.bookingId = booking._id.toString();
+    booking.qrCode = JSON.stringify(qrData);
+    await booking.save();
+    
+    // Update zone stats
+    await GameZone.findByIdAndUpdate(zoneId, {
+      $inc: { 'stats.totalBookings': 1 },
+      $set: { lastBookingAt: new Date() }
+    });
+    
+    console.log('✅ Booking created successfully:', booking._id);
+    
+    // Return formatted response
+    res.status(201).json({
+      success: true,
+      message: 'Booking created successfully',
+      booking: {
+        id: booking._id,
+        reference: booking.reference,
+        zone: {
+          id: zone._id,
+          name: zone.name,
+          location: {
+            address: zone.location.address
+          },
+          image: zone.images?.[0] || null
+        },
+        date: booking.date,
+        timeSlot: booking.timeSlot,
+        duration: booking.duration,
+        totalAmount: booking.totalAmount,
+        status: booking.status,
+        paymentStatus: booking.paymentStatus,
+        qrCode: booking.qrCode,
+        createdAt: booking.createdAt
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error creating booking:', error);
+    
+    // Handle specific MongoDB errors
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        error: 'Duplicate booking detected',
+        message: 'A booking with these details already exists'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create booking',
+      message: error.message
+    });
+  }
+};
+
 // @desc    Get single booking
 // @route   GET /api/bookings/:id
 // @access  Private
@@ -216,134 +495,6 @@ const getBooking = async (req, res) => {
   }
 };
 
-// @desc    Create new booking
-// @route   POST /api/bookings
-// @access  Private
-const createBooking = async (req, res) => {
-  try {
-    // Check validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Validation failed',
-        details: errors.array()
-      });
-    }
-    
-    const { zoneId, date, timeSlot, duration, notes } = req.body;
-    const userId = req.user.id;
-    
-    console.log('🔄 Creating booking:', { zoneId, date, timeSlot, duration, userId });
-    
-    // Verify zone exists and is active
-    const zone = await GameZone.findById(zoneId);
-    if (!zone || !zone.isActive) {
-      return res.status(404).json({
-        success: false,
-        error: 'Gaming zone not found or inactive'
-      });
-    }
-    
-    // Check if slot is available (simplified check)
-    const existingBooking = await Booking.findOne({
-      zoneId,
-      date,
-      timeSlot,
-      status: { $in: ['confirmed', 'pending'] }
-    });
-    
-    if (existingBooking) {
-      return res.status(409).json({
-        success: false,
-        error: 'Time slot already booked'
-      });
-    }
-    
-    // Calculate total amount
-    const totalAmount = zone.pricePerHour * duration;
-    
-    // Generate reference number
-    const reference = `GZ-${Math.random().toString(36).substr(2, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
-    
-    // Create QR code data
-    const qrData = {
-      bookingId: null, // Will be set after creation
-      reference,
-      zoneId,
-      zoneName: zone.name,
-      date,
-      timeSlot,
-      duration
-    };
-    
-    // Create booking
-    const booking = new Booking({
-      userId,
-      zoneId,
-      date,
-      timeSlot,
-      duration,
-      totalAmount,
-      reference,
-      notes,
-      qrCode: JSON.stringify(qrData),
-      status: 'confirmed', // Simplified - in real app might be 'pending'
-      paymentStatus: 'paid', // Simplified - in real app would handle payment
-      paymentMethod: 'card'
-    });
-    
-    await booking.save();
-    
-    // Update QR code with booking ID
-    qrData.bookingId = booking._id.toString();
-    booking.qrCode = JSON.stringify(qrData);
-    await booking.save();
-    
-    // Update zone stats
-    await GameZone.findByIdAndUpdate(zoneId, {
-      $inc: { totalBookings: 1 },
-      $set: { lastBookingAt: new Date() }
-    });
-    
-    console.log('✅ Booking created successfully:', booking._id);
-    
-    // Return formatted response
-    res.status(201).json({
-      success: true,
-      message: 'Booking created successfully',
-      booking: {
-        id: booking._id,
-        reference: booking.reference,
-        zone: {
-          id: zone._id,
-          name: zone.name,
-          location: {
-            address: zone.location.address
-          },
-          image: zone.images?.[0] || null
-        },
-        date: booking.date,
-        timeSlot: booking.timeSlot,
-        duration: booking.duration,
-        totalAmount: booking.totalAmount,
-        status: booking.status,
-        paymentStatus: booking.paymentStatus,
-        qrCode: booking.qrCode,
-        createdAt: booking.createdAt
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Error creating booking:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to create booking',
-      message: error.message
-    });
-  }
-};
-
 // @desc    Cancel booking
 // @route   PUT /api/bookings/:id/cancel
 // @access  Private
@@ -386,13 +537,14 @@ const cancelBooking = async (req, res) => {
     if (hoursDiff < 24) {
       return res.status(400).json({
         success: false,
-        error: 'Cannot cancel booking less than 24 hours before start time'
+        error: 'Cannot cancel booking less than 24 hours before start time',
+        hoursRemaining: Math.round(hoursDiff * 100) / 100
       });
     }
     
     // Update booking status
     booking.status = 'cancelled';
-    booking.paymentStatus = 'refunded'; // Simplified
+    booking.paymentStatus = 'refunded';
     booking.cancelledAt = new Date();
     if (cancellationReason) {
       booking.notes = `${booking.notes || ''}\nCancellation reason: ${cancellationReason}`;
@@ -400,11 +552,17 @@ const cancelBooking = async (req, res) => {
     
     await booking.save();
     
+    // Update zone stats
+    await GameZone.findByIdAndUpdate(booking.zoneId, {
+      $inc: { 'stats.cancelledBookings': 1 }
+    });
+    
     console.log('✅ Booking cancelled successfully:', booking._id);
     
     res.json({
       success: true,
-      message: 'Booking cancelled successfully'
+      message: 'Booking cancelled successfully',
+      booking: formatBookingResponse(booking)
     });
     
   } catch (error) {
@@ -425,7 +583,7 @@ const getBookingStats = async (req, res) => {
     const userId = req.user.id;
     
     const stats = await Booking.aggregate([
-      { $match: { userId: mongoose.Types.ObjectId(userId) } },
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
       {
         $group: {
           _id: '$status',
@@ -472,5 +630,6 @@ module.exports = {
   getBooking,
   createBooking,
   cancelBooking,
-  getBookingStats
+  getBookingStats,
+  getZoneAvailability
 };
