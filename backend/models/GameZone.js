@@ -1,4 +1,4 @@
-// models/GameZone.js - Complete GameZone Model
+// models/GameZone.js - Safe GameZone Model with Null Checks
 const mongoose = require('mongoose');
 
 const gameZoneSchema = new mongoose.Schema({
@@ -39,7 +39,7 @@ const gameZoneSchema = new mongoose.Schema({
         required: [true, 'Coordinates are required'],
         validate: {
           validator: function(coords) {
-            return coords.length === 2 && 
+            return coords && coords.length === 2 && 
                    coords[0] >= -180 && coords[0] <= 180 && // longitude
                    coords[1] >= -90 && coords[1] <= 90;     // latitude
           },
@@ -79,7 +79,7 @@ const gameZoneSchema = new mongoose.Schema({
     required: [true, 'At least one amenity is required'],
     validate: {
       validator: function(amenities) {
-        return amenities.length > 0;
+        return amenities && amenities.length > 0;
       },
       message: 'At least one amenity must be specified'
     }
@@ -94,7 +94,7 @@ const gameZoneSchema = new mongoose.Schema({
     type: [String],
     validate: {
       validator: function(images) {
-        return images.length > 0 && images.length <= 10;
+        return images && images.length > 0 && images.length <= 10;
       },
       message: 'Must have between 1 and 10 images'
     }
@@ -251,7 +251,7 @@ const gameZoneSchema = new mongoose.Schema({
       type: [String],
       validate: {
         validator: function(rules) {
-          return rules.length <= 20;
+          return !rules || rules.length <= 20;
         },
         message: 'Cannot have more than 20 house rules'
       }
@@ -328,145 +328,284 @@ gameZoneSchema.index({
   amenities: 'text'
 });
 
-// Validation for operating hours
+// SAFE Pre-save validation for operating hours with null checks
 gameZoneSchema.pre('save', function(next) {
-  const start = parseInt(this.operatingHours.start.split(':')[0]);
-  const end = parseInt(this.operatingHours.end.split(':')[0]);
-  
-  if (start >= end) {
-    next(new Error('Closing time must be after opening time'));
-  } else if (end - start < 2) {
-    next(new Error('Zone must be open for at least 2 hours'));
-  } else {
+  try {
+    // Check if operatingHours exists and has required fields
+    if (!this.operatingHours || !this.operatingHours.start || !this.operatingHours.end) {
+      return next(new Error('Operating hours are required'));
+    }
+    
+    // Safely split and validate time format
+    const startParts = this.operatingHours.start.split(':');
+    const endParts = this.operatingHours.end.split(':');
+    
+    if (startParts.length !== 2 || endParts.length !== 2) {
+      return next(new Error('Invalid time format. Use HH:MM format'));
+    }
+    
+    const startHour = parseInt(startParts[0], 10);
+    const endHour = parseInt(endParts[0], 10);
+    
+    if (isNaN(startHour) || isNaN(endHour)) {
+      return next(new Error('Invalid hour values in operating hours'));
+    }
+    
+    if (startHour >= endHour) {
+      return next(new Error('Closing time must be after opening time'));
+    }
+    
+    if (endHour - startHour < 2) {
+      return next(new Error('Zone must be open for at least 2 hours'));
+    }
+    
     next();
+  } catch (error) {
+    next(new Error(`Operating hours validation error: ${error.message}`));
   }
 });
 
-// Validation for max booking duration
+// SAFE Pre-save validation for booking duration with null checks
 gameZoneSchema.pre('save', function(next) {
-  if (this.maxBookingDuration < this.minBookingDuration) {
-    next(new Error('Maximum booking duration must be greater than minimum booking duration'));
-  } else {
+  try {
+    // Check if booking duration fields exist
+    if (this.maxBookingDuration && this.minBookingDuration) {
+      if (this.maxBookingDuration < this.minBookingDuration) {
+        return next(new Error('Maximum booking duration must be greater than minimum booking duration'));
+      }
+    }
     next();
+  } catch (error) {
+    next(new Error(`Booking duration validation error: ${error.message}`));
   }
 });
 
-// Method to check if zone is currently open
+// SAFE Method to check if zone is currently open
 gameZoneSchema.methods.isCurrentlyOpen = function() {
-  const now = new Date();
-  const currentHour = now.getHours();
-  const currentMinute = now.getMinutes();
-  const currentTime = currentHour * 60 + currentMinute;
-  
-  const [startHour, startMinute] = this.operatingHours.start.split(':').map(Number);
-  const [endHour, endMinute] = this.operatingHours.end.split(':').map(Number);
-  
-  const startTime = startHour * 60 + startMinute;
-  const endTime = endHour * 60 + endMinute;
-  
-  return currentTime >= startTime && currentTime <= endTime;
+  try {
+    // Check if operating hours exist
+    if (!this.operatingHours || !this.operatingHours.start || !this.operatingHours.end) {
+      return false;
+    }
+    
+    const now = new Date();
+    const currentHour = now.getHours();
+    const currentMinute = now.getMinutes();
+    const currentTime = currentHour * 60 + currentMinute;
+    
+    // Safely parse start and end times
+    const startParts = this.operatingHours.start.split(':');
+    const endParts = this.operatingHours.end.split(':');
+    
+    if (startParts.length !== 2 || endParts.length !== 2) {
+      return false;
+    }
+    
+    const startHour = parseInt(startParts[0], 10);
+    const startMinute = parseInt(startParts[1], 10);
+    const endHour = parseInt(endParts[0], 10);
+    const endMinute = parseInt(endParts[1], 10);
+    
+    if (isNaN(startHour) || isNaN(startMinute) || isNaN(endHour) || isNaN(endMinute)) {
+      return false;
+    }
+    
+    const startTime = startHour * 60 + startMinute;
+    const endTime = endHour * 60 + endMinute;
+    
+    return currentTime >= startTime && currentTime <= endTime;
+  } catch (error) {
+    console.error('Error checking if zone is open:', error);
+    return false;
+  }
 };
 
-// Method to get available time slots for a date
+// SAFE Method to get available time slots for a date
 gameZoneSchema.methods.getAvailableTimeSlots = async function(date) {
-  const Booking = mongoose.model('Booking');
-  
-  // Get existing bookings for this date
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-  
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-  
-  const existingBookings = await Booking.find({
-    zoneId: this._id,
-    date: {
-      $gte: startOfDay,
-      $lte: endOfDay
-    },
-    status: { $in: ['pending', 'confirmed'] }
-  });
-  
-  // Generate available slots
-  const [startHour] = this.operatingHours.start.split(':').map(Number);
-  const [endHour] = this.operatingHours.end.split(':').map(Number);
-  
-  const availableSlots = [];
-  
-  for (let hour = startHour; hour < endHour; hour++) {
-    const timeSlot = `${hour.toString().padStart(2, '0')}:00`;
+  try {
+    // Check if operating hours exist
+    if (!this.operatingHours || !this.operatingHours.start || !this.operatingHours.end) {
+      return [];
+    }
     
-    // Check if this slot is available
-    const isBooked = existingBookings.some(booking => {
-      const bookingHour = parseInt(booking.timeSlot.split(':')[0]);
-      const bookingEndHour = bookingHour + booking.duration;
-      return hour >= bookingHour && hour < bookingEndHour;
+    const Booking = mongoose.model('Booking');
+    
+    // Get existing bookings for this date
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
+    
+    const endOfDay = new Date(date);
+    endOfDay.setHours(23, 59, 59, 999);
+    
+    const existingBookings = await Booking.find({
+      zoneId: this._id,
+      date: {
+        $gte: startOfDay,
+        $lte: endOfDay
+      },
+      status: { $in: ['pending', 'confirmed'] }
     });
     
-    if (!isBooked) {
-      availableSlots.push(timeSlot);
-    }
-  }
-  
-  return availableSlots;
-};
-
-// Method to calculate price for a booking
-gameZoneSchema.methods.calculatePrice = function(duration, date, timeSlot) {
-  let basePrice = this.pricePerHour * duration;
-  
-  // Apply pricing tiers if any
-  if (this.pricingTiers && this.pricingTiers.length > 0) {
-    const bookingDate = new Date(date);
-    const dayOfWeek = bookingDate.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    // Safely parse operating hours
+    const startParts = this.operatingHours.start.split(':');
+    const endParts = this.operatingHours.end.split(':');
     
-    for (const tier of this.pricingTiers) {
-      let applies = false;
+    if (startParts.length !== 2 || endParts.length !== 2) {
+      return [];
+    }
+    
+    const startHour = parseInt(startParts[0], 10);
+    const endHour = parseInt(endParts[0], 10);
+    
+    if (isNaN(startHour) || isNaN(endHour)) {
+      return [];
+    }
+    
+    const availableSlots = [];
+    
+    for (let hour = startHour; hour < endHour; hour++) {
+      const timeSlot = `${hour.toString().padStart(2, '0')}:00`;
       
-      // Check day conditions
-      if (tier.conditions.days && tier.conditions.days.length > 0) {
-        applies = tier.conditions.days.includes(dayOfWeek);
-      }
+      // Check if this slot is available
+      const isBooked = existingBookings.some(booking => {
+        try {
+          if (!booking.timeSlot) return false;
+          
+          const bookingTimeParts = booking.timeSlot.split(':');
+          if (bookingTimeParts.length !== 2) return false;
+          
+          const bookingHour = parseInt(bookingTimeParts[0], 10);
+          if (isNaN(bookingHour)) return false;
+          
+          const bookingEndHour = bookingHour + (booking.duration || 1);
+          return hour >= bookingHour && hour < bookingEndHour;
+        } catch (error) {
+          console.error('Error checking booking slot:', error);
+          return false;
+        }
+      });
       
-      // Check time conditions
-      if (tier.conditions.startTime && tier.conditions.endTime) {
-        const bookingHour = parseInt(timeSlot.split(':')[0]);
-        const tierStartHour = parseInt(tier.conditions.startTime.split(':')[0]);
-        const tierEndHour = parseInt(tier.conditions.endTime.split(':')[0]);
-        
-        applies = applies && (bookingHour >= tierStartHour && bookingHour < tierEndHour);
-      }
-      
-      if (applies) {
-        basePrice *= tier.multiplier;
-        break; // Apply only the first matching tier
+      if (!isBooked) {
+        availableSlots.push(timeSlot);
       }
     }
+    
+    return availableSlots;
+  } catch (error) {
+    console.error('Error getting available time slots:', error);
+    return [];
   }
-  
-  return Math.round(basePrice * 100) / 100; // Round to 2 decimal places
 };
 
-// Method to update rating
+// SAFE Method to calculate price for a booking
+gameZoneSchema.methods.calculatePrice = function(duration, date, timeSlot) {
+  try {
+    if (!duration || !this.pricePerHour) {
+      return 0;
+    }
+    
+    let basePrice = this.pricePerHour * duration;
+    
+    // Apply pricing tiers if any
+    if (this.pricingTiers && Array.isArray(this.pricingTiers) && this.pricingTiers.length > 0) {
+      const bookingDate = new Date(date);
+      const dayOfWeek = bookingDate.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+      
+      for (const tier of this.pricingTiers) {
+        if (!tier || !tier.conditions) continue;
+        
+        let applies = false;
+        
+        // Check day conditions
+        if (tier.conditions.days && Array.isArray(tier.conditions.days) && tier.conditions.days.length > 0) {
+          applies = tier.conditions.days.includes(dayOfWeek);
+        }
+        
+        // Check time conditions
+        if (tier.conditions.startTime && tier.conditions.endTime && timeSlot) {
+          try {
+            const timeSlotParts = timeSlot.split(':');
+            const tierStartParts = tier.conditions.startTime.split(':');
+            const tierEndParts = tier.conditions.endTime.split(':');
+            
+            if (timeSlotParts.length === 2 && tierStartParts.length === 2 && tierEndParts.length === 2) {
+              const bookingHour = parseInt(timeSlotParts[0], 10);
+              const tierStartHour = parseInt(tierStartParts[0], 10);
+              const tierEndHour = parseInt(tierEndParts[0], 10);
+              
+              if (!isNaN(bookingHour) && !isNaN(tierStartHour) && !isNaN(tierEndHour)) {
+                applies = applies && (bookingHour >= tierStartHour && bookingHour < tierEndHour);
+              }
+            }
+          } catch (error) {
+            console.error('Error parsing time conditions:', error);
+          }
+        }
+        
+        if (applies && tier.multiplier) {
+          basePrice *= tier.multiplier;
+          break; // Apply only the first matching tier
+        }
+      }
+    }
+    
+    return Math.round(basePrice * 100) / 100; // Round to 2 decimal places
+  } catch (error) {
+    console.error('Error calculating price:', error);
+    return this.pricePerHour * (duration || 1);
+  }
+};
+
+// SAFE Method to update rating
 gameZoneSchema.methods.updateRating = function(newRating) {
-  const totalRating = this.rating * this.totalReviews;
-  this.totalReviews += 1;
-  this.rating = (totalRating + newRating) / this.totalReviews;
-  return this.save();
+  try {
+    if (!newRating || isNaN(newRating)) {
+      return Promise.reject(new Error('Invalid rating value'));
+    }
+    
+    const currentRating = this.rating || 0;
+    const currentReviews = this.totalReviews || 0;
+    
+    const totalRating = currentRating * currentReviews;
+    this.totalReviews = currentReviews + 1;
+    this.rating = (totalRating + newRating) / this.totalReviews;
+    
+    return this.save();
+  } catch (error) {
+    console.error('Error updating rating:', error);
+    return Promise.reject(error);
+  }
 };
 
-// Method to increment booking stats
+// SAFE Method to increment booking stats
 gameZoneSchema.methods.incrementBookingStats = function(status, amount) {
-  this.stats.totalBookings += 1;
-  
-  if (status === 'completed') {
-    this.stats.completedBookings += 1;
-    this.stats.totalRevenue += amount;
-  } else if (status === 'cancelled') {
-    this.stats.cancelledBookings += 1;
+  try {
+    if (!this.stats) {
+      this.stats = {
+        totalBookings: 0,
+        completedBookings: 0,
+        cancelledBookings: 0,
+        totalRevenue: 0,
+        averageSessionDuration: 0
+      };
+    }
+    
+    this.stats.totalBookings = (this.stats.totalBookings || 0) + 1;
+    
+    if (status === 'completed') {
+      this.stats.completedBookings = (this.stats.completedBookings || 0) + 1;
+      if (amount && !isNaN(amount)) {
+        this.stats.totalRevenue = (this.stats.totalRevenue || 0) + amount;
+      }
+    } else if (status === 'cancelled') {
+      this.stats.cancelledBookings = (this.stats.cancelledBookings || 0) + 1;
+    }
+    
+    return this.save();
+  } catch (error) {
+    console.error('Error incrementing booking stats:', error);
+    return Promise.reject(error);
   }
-  
-  return this.save();
 };
 
 // Static method to find zones near a location
@@ -499,34 +638,84 @@ gameZoneSchema.statics.searchZones = function(query, filters = {}) {
   return this.find(searchQuery);
 };
 
-// Virtual for average rating display
+// SAFE Virtual for average rating display
 gameZoneSchema.virtual('averageRating').get(function() {
-  return Math.round(this.rating * 10) / 10;
+  try {
+    const rating = this.rating || 0;
+    return Math.round(rating * 10) / 10;
+  } catch (error) {
+    return 0;
+  }
 });
 
-// Virtual for total operating hours
+// SAFE Virtual for total operating hours
 gameZoneSchema.virtual('totalOperatingHours').get(function() {
-  const [startHour] = this.operatingHours.start.split(':').map(Number);
-  const [endHour] = this.operatingHours.end.split(':').map(Number);
-  return endHour - startHour;
+  try {
+    if (!this.operatingHours || !this.operatingHours.start || !this.operatingHours.end) {
+      return 0;
+    }
+    
+    const startParts = this.operatingHours.start.split(':');
+    const endParts = this.operatingHours.end.split(':');
+    
+    if (startParts.length !== 2 || endParts.length !== 2) {
+      return 0;
+    }
+    
+    const startHour = parseInt(startParts[0], 10);
+    const endHour = parseInt(endParts[0], 10);
+    
+    if (isNaN(startHour) || isNaN(endHour)) {
+      return 0;
+    }
+    
+    return Math.max(0, endHour - startHour);
+  } catch (error) {
+    console.error('Error calculating total operating hours:', error);
+    return 0;
+  }
 });
 
-// Virtual for formatted address
+// SAFE Virtual for formatted address
 gameZoneSchema.virtual('formattedAddress').get(function() {
-  return `${this.location.address}, ${this.location.city}, ${this.location.state} ${this.location.zipCode}`;
+  try {
+    if (!this.location) {
+      return 'Address not available';
+    }
+    
+    const { address, city, state, zipCode } = this.location;
+    const parts = [address, city, state, zipCode].filter(part => part && part.trim());
+    
+    return parts.length > 0 ? parts.join(', ') : 'Address not available';
+  } catch (error) {
+    console.error('Error formatting address:', error);
+    return 'Address not available';
+  }
 });
 
-// Virtual for primary image
+// SAFE Virtual for primary image
 gameZoneSchema.virtual('primaryImage').get(function() {
-  return this.images && this.images.length > 0 ? this.images[0] : null;
+  try {
+    return (this.images && Array.isArray(this.images) && this.images.length > 0) 
+      ? this.images[0] 
+      : null;
+  } catch (error) {
+    console.error('Error getting primary image:', error);
+    return null;
+  }
 });
 
 // Transform output
 gameZoneSchema.set('toJSON', {
   virtuals: true,
   transform: function(doc, ret) {
-    delete ret.__v;
-    return ret;
+    try {
+      delete ret.__v;
+      return ret;
+    } catch (error) {
+      console.error('Error transforming JSON:', error);
+      return ret;
+    }
   }
 });
 
