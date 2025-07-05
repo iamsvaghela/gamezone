@@ -6,6 +6,8 @@ require('dotenv').config();
 
 const app = express();
 
+app.use('/api/stats', require('./routes/stats'));
+
 // Middleware - CORS Configuration
 app.use(cors({
   origin: true,
