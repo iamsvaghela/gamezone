@@ -6,9 +6,7 @@ require('dotenv').config();
 
 const app = express();
 
-app.use('/api/stats', require('./routes/stats'));
-
-// Middleware - CORS Configuration
+// Middleware - CORS Configuration (MUST BE FIRST)
 app.use(cors({
   origin: true,
   credentials: true
@@ -41,11 +39,12 @@ mongoose.connection.on('disconnected', () => {
   console.log('⚠️  MongoDB disconnected');
 });
 
-// API Routes
+// API Routes (AFTER MIDDLEWARE)
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/gamezones', require('./routes/gamezones'));
 app.use('/api/bookings', require('./routes/bookings'));
 app.use('/api/vendor', require('./routes/vendor'));
+app.use('/api/stats', require('./routes/stats')); // MOVED HERE
 
 // Root route - API info
 app.get('/', (req, res) => {
@@ -57,7 +56,8 @@ app.get('/', (req, res) => {
     frontend: 'https://frontend-production-88da.up.railway.app',
     endpoints: {
       health: '/health',
-      docs: '/api'
+      docs: '/api',
+      stats: '/api/stats/app'
     }
   });
 });
@@ -103,6 +103,9 @@ app.get('/api', (req, res) => {
         dashboard: 'GET /api/vendor/dashboard',
         bookings: 'GET /api/vendor/bookings',
         analytics: 'GET /api/vendor/analytics'
+      },
+      stats: {
+        app: 'GET /api/stats/app'
       }
     }
   });
@@ -132,5 +135,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📊 Database status: ${mongoose.connection.readyState === 1 ? 'Connected' : 'Connecting...'}`);
   console.log(`🔧 API docs: http://localhost:${PORT}/api`);
+  console.log(`📊 Stats endpoint: http://localhost:${PORT}/api/stats/app`);
   console.log(`🎮 Frontend: https://frontend-production-88da.up.railway.app`);
 });
