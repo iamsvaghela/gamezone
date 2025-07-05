@@ -1,8 +1,9 @@
-// Fixed operating hours validation for booking routes
+// routes/bookings.js - Complete booking routes with user bookings endpoint
 const express = require('express');
 const Booking = require('../models/Booking');
 const GameZone = require('../models/GameZone');
 const { auth, userOnly } = require('../middleware/auth');
+const mongoose = require('mongoose');
 const router = express.Router();
 
 // Helper function to convert time string to minutes
@@ -25,6 +26,20 @@ const minutesToTime = (minutes) => {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
   return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+};
+
+// Helper function to safely parse QR code
+const parseQRCode = (qrCodeString) => {
+  if (!qrCodeString || typeof qrCodeString !== 'string') {
+    return null;
+  }
+  
+  try {
+    return JSON.parse(qrCodeString);
+  } catch (error) {
+    console.warn('Failed to parse QR code:', error);
+    return null;
+  }
 };
 
 // Enhanced operating hours validation
@@ -75,6 +90,224 @@ const validateOperatingHours = (zone, timeSlot, duration) => {
     throw error;
   }
 };
+
+// GET /api/bookings - Get user bookings (MISSING ROUTE - ADDED)
+router.get('/', auth, userOnly, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { status, page = 1, limit = 10 } = req.query;
+    
+    console.log('📅 Fetching bookings for user:', userId);
+    console.log('📋 Query params:', { status, page, limit });
+    
+    // Build query
+    const query = { userId: new mongoose.Types.ObjectId(userId) };
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    
+    // Calculate pagination
+    const skip = (page - 1) * limit;
+    
+    // Fetch bookings with populated zone data
+    const bookings = await Booking.find(query)
+      .populate({
+        path: 'zoneId',
+        select: 'name location images pricePerHour rating totalReviews',
+        options: { 
+          strictPopulate: false,
+          lean: false 
+        }
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+    
+    // Get total count for pagination
+    const totalCount = await Booking.countDocuments(query);
+    
+    console.log(`✅ Found ${bookings.length} bookings for user ${userId}`);
+    
+    // Format bookings and handle cases where zone might be null
+    const formattedBookings = bookings.map(booking => {
+      // Handle case where zone was deleted
+      if (!booking.zoneId || typeof booking.zoneId !== 'object') {
+        return {
+          ...booking,
+          zoneId: {
+            _id: booking.zoneId || 'unknown',
+            name: 'Gaming Zone (Unavailable)',
+            location: {
+              address: 'Address not available',
+              city: 'Unknown',
+              state: 'Unknown'
+            },
+            images: [],
+            pricePerHour: 0,
+            rating: 0,
+            totalReviews: 0
+          }
+        };
+      }
+      
+      // Ensure all required fields exist
+      const zone = booking.zoneId;
+      return {
+        ...booking,
+        zoneId: {
+          _id: zone._id,
+          name: zone.name || 'Unknown Zone',
+          location: {
+            address: zone.location?.address || 'Address not available',
+            city: zone.location?.city || 'Unknown',
+            state: zone.location?.state || 'Unknown'
+          },
+          images: zone.images || [],
+          pricePerHour: zone.pricePerHour || 0,
+          rating: zone.rating || 0,
+          totalReviews: zone.totalReviews || 0
+        },
+        // Parse QR code safely
+        qrCode: parseQRCode(booking.qrCode)
+      };
+    });
+    
+    // Calculate pagination info
+    const totalPages = Math.ceil(totalCount / limit);
+    const hasNext = page < totalPages;
+    const hasPrev = page > 1;
+    
+    res.json({
+      success: true,
+      bookings: formattedBookings,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages,
+        totalItems: totalCount,
+        hasNext,
+        hasPrev,
+        limit: parseInt(limit)
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching bookings:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch bookings',
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// GET /api/bookings/stats - Get booking statistics
+router.get('/stats', auth, userOnly, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    const stats = await Booking.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$totalAmount' }
+        }
+      }
+    ]);
+    
+    const formattedStats = {
+      total: 0,
+      confirmed: 0,
+      completed: 0,
+      cancelled: 0,
+      pending: 0,
+      totalSpent: 0
+    };
+    
+    stats.forEach(stat => {
+      formattedStats[stat._id] = stat.count;
+      formattedStats.total += stat.count;
+      if (stat._id !== 'cancelled') {
+        formattedStats.totalSpent += stat.totalAmount;
+      }
+    });
+    
+    res.json({
+      success: true,
+      stats: formattedStats
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching booking stats:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch booking statistics',
+      message: error.message
+    });
+  }
+});
+
+// GET /api/bookings/:id - Get single booking
+router.get('/:id', auth, userOnly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.userId;
+    
+    console.log('📋 Fetching booking:', id, 'for user:', userId);
+    
+    const booking = await Booking.findOne({ 
+      _id: id, 
+      userId: new mongoose.Types.ObjectId(userId) 
+    })
+      .populate({
+        path: 'zoneId',
+        select: 'name description location images pricePerHour rating totalReviews amenities operatingHours',
+        populate: {
+          path: 'vendorId',
+          select: 'name email phone'
+        }
+      })
+      .populate({
+        path: 'userId',
+        select: 'name email phone'
+      });
+    
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    // Check if booking can be cancelled
+    const canBeCancelled = booking.status === 'confirmed' || booking.status === 'pending';
+    const bookingDate = new Date(booking.date);
+    const now = new Date();
+    const hoursDiff = (bookingDate - now) / (1000 * 60 * 60);
+    
+    const formattedBooking = {
+      ...booking.toObject(),
+      qrCode: parseQRCode(booking.qrCode),
+      canBeCancelled: canBeCancelled && hoursDiff > 24 // Can cancel if more than 24 hours away
+    };
+    
+    res.json({
+      success: true,
+      booking: formattedBooking
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching booking:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch booking',
+      message: error.message
+    });
+  }
+});
 
 // POST /api/bookings - Create new booking (Enhanced with better time validation)
 router.post('/', auth, userOnly, async (req, res) => {
@@ -309,6 +542,90 @@ router.post('/', auth, userOnly, async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: 'Server error creating booking',
+      message: error.message
+    });
+  }
+});
+
+// PUT /api/bookings/:id/cancel - Cancel booking
+router.put('/:id/cancel', auth, userOnly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { cancellationReason } = req.body;
+    const userId = req.user.userId;
+    
+    console.log('❌ Cancelling booking:', id, 'for user:', userId);
+    
+    const booking = await Booking.findOne({ 
+      _id: id, 
+      userId: new mongoose.Types.ObjectId(userId) 
+    });
+    
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    if (booking.status === 'cancelled') {
+      return res.status(400).json({
+        success: false,
+        error: 'Booking is already cancelled'
+      });
+    }
+    
+    if (booking.status === 'completed') {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot cancel completed booking'
+      });
+    }
+    
+    // Check if cancellation is allowed (24 hours before)
+    const bookingDate = new Date(booking.date);
+    const now = new Date();
+    const hoursDiff = (bookingDate - now) / (1000 * 60 * 60);
+    
+    if (hoursDiff < 24) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot cancel booking less than 24 hours before start time',
+        hoursRemaining: Math.round(hoursDiff * 100) / 100
+      });
+    }
+    
+    // Update booking status
+    booking.status = 'cancelled';
+    booking.paymentStatus = 'refunded';
+    booking.cancelledAt = new Date();
+    if (cancellationReason) {
+      booking.notes = `${booking.notes || ''}\nCancellation reason: ${cancellationReason}`;
+    }
+    
+    await booking.save();
+    
+    // Update zone stats
+    await GameZone.findByIdAndUpdate(booking.zoneId, {
+      $inc: { 'stats.cancelledBookings': 1 }
+    });
+    
+    console.log('✅ Booking cancelled successfully:', booking._id);
+    
+    res.json({
+      success: true,
+      message: 'Booking cancelled successfully',
+      booking: {
+        ...booking.toObject(),
+        qrCode: parseQRCode(booking.qrCode)
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error cancelling booking:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cancel booking',
       message: error.message
     });
   }
