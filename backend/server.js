@@ -6,12 +6,81 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware - CORS Configuration (MUST BE FIRST)
-app.use(cors({
-  origin: true,
-  credentials: true
-}));
-app.use(express.json());
+// Enhanced CORS Configuration - MUST BE FIRST
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    // List of allowed origins
+    const allowedOrigins = [
+      'http://localhost:8081',  // Expo dev server
+      'http://localhost:19006', // Expo web
+      'http://localhost:19000', // Expo dev tools
+      'http://localhost:3000',  // Local development
+      'https://frontend-production-88da.up.railway.app', // Production frontend
+      'exp://192.168.1.100:8081', // Local network (adjust IP as needed)
+      'exp://localhost:8081',
+      // Add more origins as needed
+    ];
+    
+    // Allow all localhost and 192.168.x.x origins for development
+    if (origin.includes('localhost') || origin.includes('192.168.') || origin.includes('127.0.0.1')) {
+      return callback(null, true);
+    }
+    
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // For production, be more restrictive
+    if (process.env.NODE_ENV === 'production') {
+      console.log('🚫 CORS blocked origin:', origin);
+      return callback(new Error('Not allowed by CORS'));
+    }
+    
+    // For development, allow all origins
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Origin',
+    'X-Requested-With',
+    'Content-Type',
+    'Accept',
+    'Authorization',
+    'Cache-Control',
+    'X-HTTP-Method-Override'
+  ],
+  exposedHeaders: ['X-Total-Count'],
+  maxAge: 86400, // 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly
+app.options('*', cors(corsOptions));
+
+// Additional middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Security headers
+app.use((req, res, next) => {
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'DENY');
+  res.header('X-XSS-Protection', '1; mode=block');
+  next();
+});
+
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`🌐 ${req.method} ${req.path} - Origin: ${req.headers.origin || 'None'}`);
+  next();
+});
 
 // Database Connection
 console.log('🔄 Connecting to MongoDB...');
@@ -44,7 +113,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/gamezones', require('./routes/gamezones'));
 app.use('/api/bookings', require('./routes/bookings'));
 app.use('/api/vendor', require('./routes/vendor'));
-app.use('/api/stats', require('./routes/stats')); // MOVED HERE
+app.use('/api/stats', require('./routes/stats'));
 
 // Root route - API info
 app.get('/', (req, res) => {
@@ -54,6 +123,11 @@ app.get('/', (req, res) => {
     environment: process.env.NODE_ENV || 'development',
     status: 'running',
     frontend: 'https://frontend-production-88da.up.railway.app',
+    cors: {
+      enabled: true,
+      allowedOrigins: 'Dynamic based on environment',
+      credentials: true
+    },
     endpoints: {
       health: '/health',
       docs: '/api',
@@ -70,7 +144,8 @@ app.get('/health', (req, res) => {
     message: 'GameZone API is running!',
     environment: process.env.NODE_ENV || 'development',
     database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
-    port: process.env.PORT || 3000
+    port: process.env.PORT || 3000,
+    cors: 'Enabled'
   });
 });
 
@@ -137,4 +212,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🔧 API docs: http://localhost:${PORT}/api`);
   console.log(`📊 Stats endpoint: http://localhost:${PORT}/api/stats/app`);
   console.log(`🎮 Frontend: https://frontend-production-88da.up.railway.app`);
+  console.log(`🔐 CORS: Enabled for development origins`);
 });
