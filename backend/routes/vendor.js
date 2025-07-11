@@ -1,424 +1,683 @@
+// routes/vendor.js - Vendor routes with notification handling
 const express = require('express');
+const { auth, vendorOnly } = require('../middleware/auth');
 const Booking = require('../models/Booking');
 const GameZone = require('../models/GameZone');
-const { auth, vendorOnly } = require('../middleware/auth');
+const User = require('../models/User');
+const NotificationService = require('../services/NotificationService');
 const router = express.Router();
 
-// GET /api/vendor/dashboard - Vendor dashboard data
-router.get('/dashboard', auth, vendorOnly, async (req, res) => {
+// Apply authentication and vendor-only middleware to all routes
+router.use(auth);
+router.use(vendorOnly);
+
+// @desc    Get vendor dashboard data
+// @route   GET /api/vendor/dashboard
+// @access  Private (Vendor only)
+router.get('/dashboard', async (req, res) => {
   try {
+    const vendorId = req.user.userId;
+    
     // Get vendor's zones
-    const zones = await GameZone.find({ vendorId: req.user.userId });
-    const zoneIds = zones.map(z => z._id);
-
-    if (zoneIds.length === 0) {
-      return res.json({
-        stats: {
-          totalZones: 0,
-          totalBookings: 0,
-          totalRevenue: 0,
-          todayBookings: 0,
-          monthlyRevenue: 0,
-          averageRating: 0
-        },
-        recentBookings: [],
-        zones: [],
-        monthlyStats: []
-      });
-    }
-
-    // Get all bookings for vendor's zones
-    const allBookings = await Booking.find({ zoneId: { $in: zoneIds } })
-      .populate('zoneId', 'name location')
-      .populate('userId', 'name email phone')
-      .sort({ createdAt: -1 });
-
-    // Calculate today's bookings
+    const zones = await GameZone.find({ vendorId }).select('_id name isActive');
+    const zoneIds = zones.map(zone => zone._id);
+    
+    // Get booking statistics
+    const bookingStats = await Booking.aggregate([
+      { $match: { zoneId: { $in: zoneIds } } },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$totalAmount' }
+        }
+      }
+    ]);
+    
+    // Get today's bookings
     const today = new Date();
-    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const endOfToday = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000);
-
-    const todayBookings = allBookings.filter(booking => {
-      const bookingDate = new Date(booking.date);
-      return bookingDate >= startOfToday && bookingDate < endOfToday;
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    const todayBookings = await Booking.countDocuments({
+      zoneId: { $in: zoneIds },
+      date: { $gte: today, $lt: tomorrow }
     });
-
-    // Calculate monthly revenue (current month)
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    const monthlyBookings = allBookings.filter(booking => {
-      return booking.createdAt >= startOfMonth && 
-             (booking.status === 'confirmed' || booking.status === 'completed') &&
-             booking.paymentStatus === 'paid';
-    });
-
-    const monthlyRevenue = monthlyBookings.reduce((sum, booking) => sum + booking.totalAmount, 0);
-
-    // Calculate total revenue
-    const paidBookings = allBookings.filter(booking => 
-      (booking.status === 'confirmed' || booking.status === 'completed') &&
-      booking.paymentStatus === 'paid'
-    );
-    const totalRevenue = paidBookings.reduce((sum, booking) => sum + booking.totalAmount, 0);
-
-    // Calculate average rating
-    const averageRating = zones.length > 0 
-      ? zones.reduce((sum, zone) => sum + zone.rating, 0) / zones.length 
-      : 0;
-
-    // Get monthly stats for the last 6 months
-    const monthlyStats = [];
-    for (let i = 5; i >= 0; i--) {
-      const monthDate = new Date(today.getFullYear(), today.getMonth() - i, 1);
-      const nextMonth = new Date(today.getFullYear(), today.getMonth() - i + 1, 1);
-      
-      const monthBookings = allBookings.filter(booking => {
-        return booking.createdAt >= monthDate && 
-               booking.createdAt < nextMonth &&
-               (booking.status === 'confirmed' || booking.status === 'completed') &&
-               booking.paymentStatus === 'paid';
-      });
-
-      monthlyStats.push({
-        month: monthDate.toLocaleString('default', { month: 'short', year: 'numeric' }),
-        revenue: monthBookings.reduce((sum, booking) => sum + booking.totalAmount, 0),
-        bookings: monthBookings.length
-      });
-    }
-
-    // Calculate stats
+    
+    // Format stats
     const stats = {
       totalZones: zones.length,
-      totalBookings: allBookings.length,
-      totalRevenue: Math.round(totalRevenue * 100) / 100,
-      todayBookings: todayBookings.length,
-      monthlyRevenue: Math.round(monthlyRevenue * 100) / 100,
-      averageRating: Math.round(averageRating * 10) / 10,
-      pendingBookings: allBookings.filter(b => b.status === 'pending').length,
-      completedBookings: allBookings.filter(b => b.status === 'completed').length
+      activeZones: zones.filter(zone => zone.isActive).length,
+      totalBookings: 0,
+      confirmedBookings: 0,
+      pendingBookings: 0,
+      cancelledBookings: 0,
+      totalRevenue: 0,
+      todayBookings
     };
-
+    
+    bookingStats.forEach(stat => {
+      stats.totalBookings += stat.count;
+      stats[`${stat._id}Bookings`] = stat.count;
+      if (stat._id !== 'cancelled') {
+        stats.totalRevenue += stat.totalAmount;
+      }
+    });
+    
     res.json({
+      success: true,
       stats,
-      recentBookings: allBookings.slice(0, 10),
       zones: zones.map(zone => ({
         id: zone._id,
         name: zone.name,
-        location: zone.location,
-        rating: zone.rating,
-        pricePerHour: zone.pricePerHour,
         isActive: zone.isActive
-      })),
-      monthlyStats
+      }))
     });
-
+    
   } catch (error) {
-    console.error('Error fetching vendor dashboard:', error);
-    res.status(500).json({ 
-      error: 'Server error fetching dashboard data' 
+    console.error('❌ Error fetching vendor dashboard:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch dashboard data',
+      message: error.message
     });
   }
 });
 
-// GET /api/vendor/bookings - Get all bookings for vendor
-router.get('/bookings', auth, vendorOnly, async (req, res) => {
+// @desc    Get vendor bookings
+// @route   GET /api/vendor/bookings
+// @access  Private (Vendor only)
+router.get('/bookings', async (req, res) => {
   try {
-    const { status, zoneId, date, page = 1, limit = 20 } = req.query;
-
-    // Get vendor's zones
-    const zones = await GameZone.find({ vendorId: req.user.userId });
-    const zoneIds = zones.map(z => z._id);
-
-    if (zoneIds.length === 0) {
-      return res.json({
-        bookings: [],
-        pagination: {
-          currentPage: 1,
-          totalPages: 0,
-          totalItems: 0,
-          hasNext: false,
-          hasPrev: false
-        }
-      });
-    }
-
-    // Build query
-    let query = { zoneId: { $in: zoneIds } };
+    const vendorId = req.user.userId;
+    const { status, page = 1, limit = 20, date } = req.query;
     
-    if (status) {
+    // Get vendor's zones
+    const zones = await GameZone.find({ vendorId }).select('_id');
+    const zoneIds = zones.map(zone => zone._id);
+    
+    // Build query
+    const query = { zoneId: { $in: zoneIds } };
+    if (status && status !== 'all') {
       query.status = status;
     }
-    
-    if (zoneId && zoneIds.some(id => id.toString() === zoneId)) {
-      query.zoneId = zoneId;
-    }
-    
     if (date) {
-      const requestedDate = new Date(date);
-      const startOfDay = new Date(requestedDate.setHours(0, 0, 0, 0));
-      const endOfDay = new Date(requestedDate.setHours(23, 59, 59, 999));
-      query.date = { $gte: startOfDay, $lte: endOfDay };
+      const queryDate = new Date(date);
+      queryDate.setHours(0, 0, 0, 0);
+      const nextDay = new Date(queryDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      query.date = { $gte: queryDate, $lt: nextDay };
     }
-
-    const skip = (Number(page) - 1) * Number(limit);
-
+    
+    // Calculate pagination
+    const skip = (page - 1) * limit;
+    
+    // Fetch bookings
     const bookings = await Booking.find(query)
-      .populate('zoneId', 'name location images')
-      .populate('userId', 'name email phone')
+      .populate({
+        path: 'zoneId',
+        select: 'name location images'
+      })
+      .populate({
+        path: 'userId',
+        select: 'name email phone'
+      })
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(Number(limit));
-
-    const total = await Booking.countDocuments(query);
-
+      .limit(parseInt(limit));
+    
+    // Get total count
+    const totalCount = await Booking.countDocuments(query);
+    
+    // Format bookings
+    const formattedBookings = bookings.map(booking => ({
+      id: booking._id,
+      reference: booking.reference,
+      zone: {
+        id: booking.zoneId._id,
+        name: booking.zoneId.name,
+        location: booking.zoneId.location
+      },
+      customer: {
+        id: booking.userId._id,
+        name: booking.userId.name,
+        email: booking.userId.email,
+        phone: booking.userId.phone
+      },
+      date: booking.date,
+      timeSlot: booking.timeSlot,
+      duration: booking.duration,
+      totalAmount: booking.totalAmount,
+      status: booking.status,
+      paymentStatus: booking.paymentStatus,
+      notes: booking.notes,
+      createdAt: booking.createdAt,
+      updatedAt: booking.updatedAt
+    }));
+    
     res.json({
-      bookings,
+      success: true,
+      bookings: formattedBookings,
       pagination: {
-        currentPage: Number(page),
-        totalPages: Math.ceil(total / Number(limit)),
-        totalItems: total,
-        hasNext: skip + bookings.length < total,
-        hasPrev: Number(page) > 1
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(totalCount / limit),
+        totalItems: totalCount,
+        hasNext: page < Math.ceil(totalCount / limit),
+        hasPrev: page > 1,
+        limit: parseInt(limit)
       }
     });
-
+    
   } catch (error) {
-    console.error('Error fetching vendor bookings:', error);
-    res.status(500).json({ 
-      error: 'Server error fetching bookings' 
+    console.error('❌ Error fetching vendor bookings:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch bookings',
+      message: error.message
     });
   }
 });
 
-// PUT /api/vendor/bookings/:id/status - Update booking status
-router.put('/bookings/:id/status', auth, vendorOnly, async (req, res) => {
+// @desc    Confirm booking
+// @route   PUT /api/vendor/bookings/:id/confirm
+// @access  Private (Vendor only)
+router.put('/bookings/:id/confirm', async (req, res) => {
   try {
-    const { status } = req.body;
-    const bookingId = req.params.id;
-
-    if (!['pending', 'confirmed', 'completed', 'cancelled'].includes(status)) {
-      return res.status(400).json({ 
-        error: 'Invalid status. Must be: pending, confirmed, completed, or cancelled' 
-      });
-    }
-
-    // Find booking and verify vendor ownership
-    const booking = await Booking.findById(bookingId)
-      .populate('zoneId', 'vendorId name');
-
+    const { id } = req.params;
+    const vendorId = req.user.userId;
+    const { notes } = req.body;
+    
+    console.log('✅ Vendor confirming booking:', id);
+    
+    // Get booking with zone details
+    const booking = await Booking.findById(id).populate('zoneId');
+    
     if (!booking) {
-      return res.status(404).json({ 
-        error: 'Booking not found' 
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
       });
     }
-
-    if (booking.zoneId.vendorId.toString() !== req.user.userId.toString()) {
-      return res.status(403).json({ 
-        error: 'Access denied. This booking does not belong to your gaming zone.' 
+    
+    // Verify vendor owns the zone
+    if (booking.zoneId.vendorId.toString() !== vendorId) {
+      return res.status(403).json({
+        success: false,
+        error: 'You can only confirm bookings for your own zones'
       });
     }
-
-    // Update status
-    const oldStatus = booking.status;
-    booking.status = status;
-
-    if (status === 'completed') {
-      booking.paymentStatus = 'paid'; // Ensure payment is marked as paid when completed
+    
+    // Check if booking can be confirmed
+    if (booking.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: `Cannot confirm booking with status: ${booking.status}`
+      });
     }
-
+    
+    // Update booking status
+    booking.status = 'confirmed';
+    if (notes) {
+      booking.notes = booking.notes ? `${booking.notes}\n\nVendor notes: ${notes}` : `Vendor notes: ${notes}`;
+    }
     await booking.save();
-
+    
+    // 📢 SEND CONFIRMATION NOTIFICATIONS
+    console.log('📢 Sending confirmation notifications...');
+    
+    try {
+      // Get customer details
+      const customer = await User.findById(booking.userId);
+      
+      // Send notification to customer
+      await NotificationService.createNotification(booking.userId, {
+        type: 'booking_confirmed',
+        category: 'booking',
+        title: '🎉 Booking Confirmed!',
+        message: `Your booking for ${booking.zoneId.name} on ${booking.date.toLocaleDateString()} has been confirmed!`,
+        priority: 'high',
+        data: {
+          bookingId: booking._id,
+          reference: booking.reference,
+          zoneId: booking.zoneId._id,
+          zoneName: booking.zoneId.name,
+          date: booking.date,
+          timeSlot: booking.timeSlot,
+          duration: booking.duration,
+          totalAmount: booking.totalAmount,
+          vendorNotes: notes || null
+        },
+        actions: [
+          {
+            type: 'view',
+            label: 'View Booking',
+            endpoint: `/api/bookings/${booking._id}`,
+            method: 'GET'
+          }
+        ]
+      });
+      
+      // Send confirmation notification to vendor
+      await NotificationService.createNotification(vendorId, {
+        type: 'booking_confirmed',
+        category: 'booking',
+        title: '✅ Booking Confirmed',
+        message: `You confirmed the booking for ${booking.zoneId.name} on ${booking.date.toLocaleDateString()}`,
+        priority: 'medium',
+        data: {
+          bookingId: booking._id,
+          reference: booking.reference,
+          zoneId: booking.zoneId._id,
+          zoneName: booking.zoneId.name,
+          customerName: customer.name,
+          date: booking.date,
+          timeSlot: booking.timeSlot,
+          duration: booking.duration,
+          totalAmount: booking.totalAmount
+        }
+      });
+      
+      console.log('✅ Confirmation notifications sent');
+      
+    } catch (notificationError) {
+      console.error('❌ Error sending confirmation notifications:', notificationError);
+      // Don't fail the confirmation if notifications fail
+    }
+    
     res.json({
-      message: `Booking status updated from ${oldStatus} to ${status}`,
+      success: true,
+      message: 'Booking confirmed successfully',
       booking: {
         id: booking._id,
         reference: booking.reference,
         status: booking.status,
-        paymentStatus: booking.paymentStatus,
-        updatedAt: booking.updatedAt
+        zoneName: booking.zoneId.name,
+        customerName: customer?.name || 'Unknown',
+        date: booking.date,
+        timeSlot: booking.timeSlot,
+        duration: booking.duration,
+        totalAmount: booking.totalAmount,
+        notes: booking.notes
       }
     });
-
-  } catch (error) {
-    console.error('Error updating booking status:', error);
     
-    if (error.name === 'CastError') {
-      return res.status(400).json({ 
-        error: 'Invalid booking ID' 
-      });
-    }
-
-    res.status(500).json({ 
-      error: 'Server error updating booking status' 
+  } catch (error) {
+    console.error('❌ Error confirming booking:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to confirm booking',
+      message: error.message
     });
   }
 });
 
-// GET /api/vendor/analytics - Get detailed analytics
-router.get('/analytics', auth, vendorOnly, async (req, res) => {
+// @desc    Decline booking
+// @route   PUT /api/vendor/bookings/:id/decline
+// @access  Private (Vendor only)
+router.put('/bookings/:id/decline', async (req, res) => {
   try {
-    const { period = '30days' } = req.query;
-
-    // Get vendor's zones
-    const zones = await GameZone.find({ vendorId: req.user.userId });
-    const zoneIds = zones.map(z => z._id);
-
-    if (zoneIds.length === 0) {
-      return res.json({
-        revenue: { total: 0, growth: 0 },
-        bookings: { total: 0, growth: 0 },
-        zones: { total: 0, active: 0 },
-        topZones: [],
-        revenueByZone: [],
-        bookingTrends: []
+    const { id } = req.params;
+    const vendorId = req.user.userId;
+    const { reason } = req.body;
+    
+    console.log('❌ Vendor declining booking:', id);
+    
+    // Get booking with zone details
+    const booking = await Booking.findById(id).populate('zoneId');
+    
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
       });
     }
-
-    // Calculate date range
-    const endDate = new Date();
-    let startDate = new Date();
     
-    switch (period) {
-      case '7days':
-        startDate.setDate(endDate.getDate() - 7);
-        break;
-      case '30days':
-        startDate.setDate(endDate.getDate() - 30);
-        break;
-      case '90days':
-        startDate.setDate(endDate.getDate() - 90);
-        break;
-      case '1year':
-        startDate.setFullYear(endDate.getFullYear() - 1);
-        break;
-      default:
-        startDate.setDate(endDate.getDate() - 30);
-    }
-
-    // Get bookings for the period
-    const bookings = await Booking.find({
-      zoneId: { $in: zoneIds },
-      createdAt: { $gte: startDate, $lte: endDate }
-    }).populate('zoneId', 'name');
-
-    const paidBookings = bookings.filter(b => 
-      (b.status === 'confirmed' || b.status === 'completed') && 
-      b.paymentStatus === 'paid'
-    );
-
-    // Calculate revenue and growth
-    const totalRevenue = paidBookings.reduce((sum, b) => sum + b.totalAmount, 0);
-    
-    // Get previous period data for growth calculation
-    const previousStartDate = new Date(startDate);
-    previousStartDate.setTime(previousStartDate.getTime() - (endDate.getTime() - startDate.getTime()));
-    
-    const previousBookings = await Booking.find({
-      zoneId: { $in: zoneIds },
-      createdAt: { $gte: previousStartDate, $lt: startDate },
-      status: { $in: ['confirmed', 'completed'] },
-      paymentStatus: 'paid'
-    });
-
-    const previousRevenue = previousBookings.reduce((sum, b) => sum + b.totalAmount, 0);
-    const revenueGrowth = previousRevenue > 0 
-      ? ((totalRevenue - previousRevenue) / previousRevenue) * 100 
-      : 0;
-
-    const bookingGrowth = previousBookings.length > 0 
-      ? ((paidBookings.length - previousBookings.length) / previousBookings.length) * 100 
-      : 0;
-
-    // Top performing zones
-    const zonePerformance = zones.map(zone => {
-      const zoneBookings = paidBookings.filter(b => b.zoneId._id.toString() === zone._id.toString());
-      const zoneRevenue = zoneBookings.reduce((sum, b) => sum + b.totalAmount, 0);
-      
-      return {
-        id: zone._id,
-        name: zone.name,
-        bookings: zoneBookings.length,
-        revenue: zoneRevenue,
-        averageBookingValue: zoneBookings.length > 0 ? zoneRevenue / zoneBookings.length : 0
-      };
-    }).sort((a, b) => b.revenue - a.revenue);
-
-    // Booking trends (daily data for the period)
-    const bookingTrends = [];
-    const days = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
-    
-    for (let i = 0; i < days; i++) {
-      const dayStart = new Date(startDate);
-      dayStart.setDate(startDate.getDate() + i);
-      dayStart.setHours(0, 0, 0, 0);
-      
-      const dayEnd = new Date(dayStart);
-      dayEnd.setHours(23, 59, 59, 999);
-      
-      const dayBookings = paidBookings.filter(b => 
-        b.createdAt >= dayStart && b.createdAt <= dayEnd
-      );
-      
-      bookingTrends.push({
-        date: dayStart.toISOString().split('T')[0],
-        bookings: dayBookings.length,
-        revenue: dayBookings.reduce((sum, b) => sum + b.totalAmount, 0)
+    // Verify vendor owns the zone
+    if (booking.zoneId.vendorId.toString() !== vendorId) {
+      return res.status(403).json({
+        success: false,
+        error: 'You can only decline bookings for your own zones'
       });
     }
-
+    
+    // Check if booking can be declined
+    if (booking.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: `Cannot decline booking with status: ${booking.status}`
+      });
+    }
+    
+    // Update booking status
+    booking.status = 'cancelled';
+    booking.paymentStatus = 'refunded';
+    booking.cancelledAt = new Date();
+    booking.cancellationReason = reason || 'Declined by vendor';
+    
+    await booking.save();
+    
+    // 📢 SEND DECLINE NOTIFICATIONS
+    console.log('📢 Sending decline notifications...');
+    
+    try {
+      // Get customer details
+      const customer = await User.findById(booking.userId);
+      
+      // Send notification to customer
+      await NotificationService.createNotification(booking.userId, {
+        type: 'booking_cancelled',
+        category: 'booking',
+        title: '❌ Booking Declined',
+        message: `Your booking for ${booking.zoneId.name} on ${booking.date.toLocaleDateString()} has been declined by the vendor.`,
+        priority: 'high',
+        data: {
+          bookingId: booking._id,
+          reference: booking.reference,
+          zoneId: booking.zoneId._id,
+          zoneName: booking.zoneId.name,
+          date: booking.date,
+          timeSlot: booking.timeSlot,
+          duration: booking.duration,
+          totalAmount: booking.totalAmount,
+          declineReason: reason || 'No reason provided',
+          refundAmount: booking.totalAmount
+        },
+        actions: [
+          {
+            type: 'view',
+            label: 'Browse Other Zones',
+            endpoint: '/api/gamezones',
+            method: 'GET'
+          }
+        ]
+      });
+      
+      // Send notification to vendor
+      await NotificationService.createNotification(vendorId, {
+        type: 'booking_cancelled',
+        category: 'booking',
+        title: '❌ Booking Declined',
+        message: `You declined the booking for ${booking.zoneId.name} on ${booking.date.toLocaleDateString()}`,
+        priority: 'medium',
+        data: {
+          bookingId: booking._id,
+          reference: booking.reference,
+          zoneId: booking.zoneId._id,
+          zoneName: booking.zoneId.name,
+          customerName: customer.name,
+          date: booking.date,
+          timeSlot: booking.timeSlot,
+          declineReason: reason || 'No reason provided'
+        }
+      });
+      
+      console.log('✅ Decline notifications sent');
+      
+    } catch (notificationError) {
+      console.error('❌ Error sending decline notifications:', notificationError);
+      // Don't fail the decline if notifications fail
+    }
+    
     res.json({
-      revenue: {
-        total: Math.round(totalRevenue * 100) / 100,
-        growth: Math.round(revenueGrowth * 10) / 10
-      },
-      bookings: {
-        total: paidBookings.length,
-        growth: Math.round(bookingGrowth * 10) / 10
-      },
-      zones: {
-        total: zones.length,
-        active: zones.filter(z => z.isActive).length
-      },
-      topZones: zonePerformance.slice(0, 5),
-      revenueByZone: zonePerformance,
-      bookingTrends
+      success: true,
+      message: 'Booking declined successfully. Customer will be notified and refunded.',
+      booking: {
+        id: booking._id,
+        reference: booking.reference,
+        status: booking.status,
+        zoneName: booking.zoneId.name,
+        customerName: customer?.name || 'Unknown',
+        date: booking.date,
+        timeSlot: booking.timeSlot,
+        cancellationReason: booking.cancellationReason,
+        refundAmount: booking.totalAmount
+      }
     });
-
+    
   } catch (error) {
-    console.error('Error fetching vendor analytics:', error);
-    res.status(500).json({ 
-      error: 'Server error fetching analytics' 
+    console.error('❌ Error declining booking:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to decline booking',
+      message: error.message
     });
   }
 });
 
-// GET /api/vendor/zones - Get vendor's gaming zones
-router.get('/zones', auth, vendorOnly, async (req, res) => {
+// @desc    Get vendor zones
+// @route   GET /api/vendor/zones
+// @access  Private (Vendor only)
+router.get('/zones', async (req, res) => {
   try {
-    const zones = await GameZone.find({ vendorId: req.user.userId })
+    const vendorId = req.user.userId;
+    
+    const zones = await GameZone.find({ vendorId })
+      .select('name description location pricePerHour images isActive operatingHours capacity amenities createdAt')
       .sort({ createdAt: -1 });
-
+    
     res.json({
+      success: true,
       zones: zones.map(zone => ({
         id: zone._id,
         name: zone.name,
         description: zone.description,
         location: zone.location,
-        amenities: zone.amenities,
         pricePerHour: zone.pricePerHour,
         images: zone.images,
-        operatingHours: zone.operatingHours,
-        rating: zone.rating,
-        totalReviews: zone.totalReviews,
         isActive: zone.isActive,
+        operatingHours: zone.operatingHours,
         capacity: zone.capacity,
+        amenities: zone.amenities,
         createdAt: zone.createdAt
       }))
     });
-
+    
   } catch (error) {
-    console.error('Error fetching vendor zones:', error);
-    res.status(500).json({ 
-      error: 'Server error fetching gaming zones' 
+    console.error('❌ Error fetching vendor zones:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch zones',
+      message: error.message
+    });
+  }
+});
+
+// @desc    Update zone status
+// @route   PUT /api/vendor/zones/:id/status
+// @access  Private (Vendor only)
+router.put('/zones/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const vendorId = req.user.userId;
+    const { isActive } = req.body;
+    
+    const zone = await GameZone.findOne({ _id: id, vendorId });
+    
+    if (!zone) {
+      return res.status(404).json({
+        success: false,
+        error: 'Zone not found'
+      });
+    }
+    
+    zone.isActive = isActive;
+    await zone.save();
+    
+    // 📢 SEND ZONE UPDATE NOTIFICATIONS
+    if (!isActive) {
+      // If zone is being deactivated, notify customers with upcoming bookings
+      const upcomingBookings = await Booking.find({
+        zoneId: id,
+        status: { $in: ['pending', 'confirmed'] },
+        date: { $gte: new Date() }
+      }).populate('userId');
+      
+      for (const booking of upcomingBookings) {
+        await NotificationService.createNotification(booking.userId._id, {
+          type: 'zone_update',
+          category: 'zone',
+          title: '⚠️ Zone Temporarily Unavailable',
+          message: `${zone.name} has been temporarily deactivated. Your upcoming booking may be affected.`,
+          priority: 'high',
+          data: {
+            zoneId: zone._id,
+            zoneName: zone.name,
+            bookingId: booking._id,
+            reference: booking.reference,
+            date: booking.date,
+            timeSlot: booking.timeSlot
+          },
+          actions: [
+            {
+              type: 'view',
+              label: 'View Booking',
+              endpoint: `/api/bookings/${booking._id}`,
+              method: 'GET'
+            }
+          ]
+        });
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Zone ${isActive ? 'activated' : 'deactivated'} successfully`,
+      zone: {
+        id: zone._id,
+        name: zone.name,
+        isActive: zone.isActive
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error updating zone status:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update zone status',
+      message: error.message
+    });
+  }
+});
+
+// @desc    Get vendor analytics
+// @route   GET /api/vendor/analytics
+// @access  Private (Vendor only)
+router.get('/analytics', async (req, res) => {
+  try {
+    const vendorId = req.user.userId;
+    const { period = '30d' } = req.query;
+    
+    // Get vendor's zones
+    const zones = await GameZone.find({ vendorId }).select('_id name');
+    const zoneIds = zones.map(zone => zone._id);
+    
+    // Calculate date range
+    const endDate = new Date();
+    const startDate = new Date();
+    
+    switch (period) {
+      case '7d':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case '30d':
+        startDate.setDate(startDate.getDate() - 30);
+        break;
+      case '90d':
+        startDate.setDate(startDate.getDate() - 90);
+        break;
+      default:
+        startDate.setDate(startDate.getDate() - 30);
+    }
+    
+    // Get booking analytics
+    const bookingAnalytics = await Booking.aggregate([
+      {
+        $match: {
+          zoneId: { $in: zoneIds },
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            date: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            status: '$status'
+          },
+          count: { $sum: 1 },
+          revenue: { $sum: '$totalAmount' }
+        }
+      },
+      {
+        $sort: { '_id.date': 1 }
+      }
+    ]);
+    
+    // Get zone performance
+    const zonePerformance = await Booking.aggregate([
+      {
+        $match: {
+          zoneId: { $in: zoneIds },
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: '$zoneId',
+          totalBookings: { $sum: 1 },
+          totalRevenue: { $sum: '$totalAmount' },
+          avgBookingValue: { $avg: '$totalAmount' }
+        }
+      },
+      {
+        $lookup: {
+          from: 'gamezones',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'zone'
+        }
+      },
+      {
+        $unwind: '$zone'
+      },
+      {
+        $project: {
+          zoneName: '$zone.name',
+          totalBookings: 1,
+          totalRevenue: 1,
+          avgBookingValue: 1
+        }
+      },
+      {
+        $sort: { totalRevenue: -1 }
+      }
+    ]);
+    
+    res.json({
+      success: true,
+      analytics: {
+        period,
+        dateRange: {
+          start: startDate,
+          end: endDate
+        },
+        bookingTrends: bookingAnalytics,
+        zonePerformance,
+        totalZones: zones.length,
+        summary: {
+          totalBookings: bookingAnalytics.reduce((sum, item) => sum + item.count, 0),
+          totalRevenue: bookingAnalytics.reduce((sum, item) => sum + item.revenue, 0),
+          avgBookingValue: zonePerformance.reduce((sum, item) => sum + item.avgBookingValue, 0) / zonePerformance.length || 0
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching vendor analytics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch analytics',
+      message: error.message
     });
   }
 });
