@@ -19,3 +19,10 @@
     "concurrently": "^8.2.0"
   }
 }
+
+{
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    // ... your existing dependencies
+  }
+}

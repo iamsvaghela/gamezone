@@ -13,6 +13,27 @@ const generateToken = (userId) => {
   );
 };
 
+
+// POST /api/auth/update-push-token
+router.post('/update-push-token', auth, async (req, res) => {
+  try {
+    const { pushToken } = req.body;
+    const userId = req.user.userId;
+
+    await User.findByIdAndUpdate(userId, { pushToken });
+
+    res.json({
+      success: true,
+      message: 'Push token updated successfully'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update push token'
+    });
+  }
+});
+
 // Helper function to generate random password for Google users
 function generateRandomPassword() {
   const crypto = require('crypto');

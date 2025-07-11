@@ -5,6 +5,9 @@ const User = require('../models/User');
 const NotificationService = require('../services/NotificationService');
 const { validationResult } = require('express-validator');
 const mongoose = require('mongoose');
+const FirebaseService = require('../services/FirebaseService');
+const Notification = require('../models/Notification'); // Use the schema from notifications.js
+
 
 // @desc    Create new booking with notifications
 // @route   POST /api/bookings
@@ -247,6 +250,55 @@ const createBooking = async (req, res) => {
       message: error.message
     });
   }
+
+
+  async function createBookingWithNotifications(bookingData) {
+    try {
+      // Create booking (your existing code)
+      const booking = await Booking.create(bookingData);
+      
+      // Create notification in database
+      const notification = new Notification({
+        userId: booking.userId,
+        type: 'booking_created',
+        title: 'Booking Created Successfully',
+        message: `Your booking for ${booking.zoneName} has been created and is pending confirmation.`,
+        data: {
+          bookingId: booking._id,
+          zoneName: booking.zoneName,
+          date: booking.date,
+          timeSlot: booking.timeSlot,
+          amount: booking.totalAmount
+        },
+        priority: 'medium'
+      });
+      
+      await notification.save();
+      console.log('✅ Notification saved to database:', notification._id);
+      
+      // Send push notification if user has token
+      const user = await User.findById(booking.userId);
+      if (user && user.pushToken) {
+        await FirebaseService.sendPushNotification(user.pushToken, {
+          title: 'Booking Created Successfully',
+          body: `Your booking for ${booking.zoneName} has been created.`,
+          type: 'booking_created',
+          data: {
+            bookingId: booking._id.toString(),
+            zoneName: booking.zoneName
+          }
+        });
+      }
+      
+      return { success: true, booking, notification };
+      
+    } catch (error) {
+      console.error('❌ Error creating booking with notifications:', error);
+      throw error;
+    }
+  }
+
+
 };
 
 // @desc    Cancel booking with notifications

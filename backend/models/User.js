@@ -16,6 +16,24 @@ const userSchema = new mongoose.Schema({
     trim: true,
     match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email']
   },
+  pushToken: {
+    type: String,
+    default: null
+  },
+  pushNotificationSettings: {
+    enabled: {
+      type: Boolean,
+      default: true
+    },
+    bookingUpdates: {
+      type: Boolean,
+      default: true
+    },
+    systemAnnouncements: {
+      type: Boolean,
+      default: false
+    }
+  },
   password: {
     type: String,
     required: function() {
