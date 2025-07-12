@@ -1,343 +1,260 @@
-// routes/notifications.js - Create this file in your backend
 const express = require('express');
 const router = express.Router();
+const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 
-// Try to import auth middleware
-let auth;
-try {
-  auth = require('../middleware/auth').auth;
-} catch (error) {
-  console.warn('⚠️  Auth middleware not found, using fallback');
-  auth = (req, res, next) => {
-    // Fallback auth - extract user from token if available
+// Simple auth middleware
+const auth = (req, res, next) => {
+  try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
-    if (token) {
-      try {
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-        req.user = { userId: decoded.userId };
-      } catch (error) {
-        console.log('Invalid token');
-      }
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Access denied. No token provided.' 
+      });
     }
+    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    req.user = { userId: decoded.userId };
     next();
-  };
-}
+  } catch (error) {
+    console.error('Auth error:', error);
+    res.status(401).json({ 
+      success: false, 
+      error: 'Invalid token.' 
+    });
+  }
+};
 
-// Try to import models
-let Notification, User, Booking;
-try {
-  // Create simple Notification model if it doesn't exist
-  const notificationSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    type: { type: String, required: true },
-    title: { type: String, required: true },
-    message: { type: String, required: true },
-    data: { type: Object, default: {} },
-    isRead: { type: Boolean, default: false },
-    priority: { type: String, enum: ['low', 'medium', 'high'], default: 'medium' },
-    createdAt: { type: Date, default: Date.now },
-    actions: [{ type: Object }]
-  });
-  
-  Notification = mongoose.models.Notification || mongoose.model('Notification', notificationSchema);
-  
-  // Try to get other models
-  User = require('../models/User');
-  Booking = require('../models/Booking');
-} catch (error) {
-  console.warn('⚠️  Some models not available:', error.message);
-}
+// Mock notification data for testing
+const mockNotifications = [
+  {
+    id: '1',
+    type: 'booking_created',
+    title: 'New Booking Request',
+    message: 'You have a new booking request for Elite Gaming Zone',
+    data: { bookingId: '123', zoneName: 'Elite Gaming Zone' },
+    isRead: false,
+    priority: 'high',
+    category: 'booking',
+    actions: [
+      { type: 'confirm', label: 'Confirm', endpoint: '/api/bookings/123/confirm', method: 'PUT' }
+    ],
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: '2',
+    type: 'system_announcement',
+    title: 'System Update',
+    message: 'The system has been updated with new features',
+    data: {},
+    isRead: true,
+    priority: 'medium',
+    category: 'system',
+    actions: [],
+    createdAt: new Date(Date.now() - 3600000).toISOString()
+  }
+];
 
-// GET /api/notifications - Get user notifications
+// GET /api/notifications
 router.get('/', auth, async (req, res) => {
   try {
-    if (!req.user?.userId) {
-      return res.status(401).json({ success: false, error: 'User not authenticated' });
-    }
-
     const { page = 1, limit = 20, unreadOnly = false } = req.query;
     
-    const query = { userId: req.user.userId };
+    let notifications = mockNotifications;
+    
     if (unreadOnly === 'true') {
-      query.isRead = false;
+      notifications = notifications.filter(n => !n.isRead);
     }
-
-    const notifications = await Notification.find(query)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-
-    const total = await Notification.countDocuments(query);
-    const unreadCount = await Notification.countDocuments({ 
-      userId: req.user.userId, 
-      isRead: false 
-    });
-
+    
+    const unreadCount = mockNotifications.filter(n => !n.isRead).length;
+    
     console.log(`📋 Retrieved ${notifications.length} notifications for user ${req.user.userId}`);
-
+    
     res.json({
       success: true,
       notifications,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
+        total: notifications.length,
+        pages: Math.ceil(notifications.length / limit)
       },
       unreadCount
     });
-
   } catch (error) {
     console.error('❌ Error fetching notifications:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch notifications',
-      message: error.message
+      error: 'Failed to fetch notifications'
     });
   }
 });
 
-// GET /api/notifications/unread-count - Get unread count
+// GET /api/notifications/unread-count
 router.get('/unread-count', auth, async (req, res) => {
   try {
-    if (!req.user?.userId) {
-      return res.status(401).json({ success: false, error: 'User not authenticated' });
-    }
-
-    const unreadCount = await Notification.countDocuments({
-      userId: req.user.userId,
-      isRead: false
-    });
-
+    const unreadCount = mockNotifications.filter(n => !n.isRead).length;
+    
     res.json({
       success: true,
       unreadCount
     });
-
   } catch (error) {
     console.error('❌ Error fetching unread count:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch unread count',
-      message: error.message
+      error: 'Failed to fetch unread count'
     });
   }
 });
 
-// PUT /api/notifications/mark-read - Mark notifications as read
+// PUT /api/notifications/mark-read
 router.put('/mark-read', auth, async (req, res) => {
   try {
-    if (!req.user?.userId) {
-      return res.status(401).json({ success: false, error: 'User not authenticated' });
-    }
-
     const { notificationIds } = req.body;
     
-    if (!notificationIds || !Array.isArray(notificationIds)) {
-      return res.status(400).json({
-        success: false,
-        error: 'notificationIds array is required'
-      });
-    }
-
-    const result = await Notification.updateMany(
-      { 
-        userId: req.user.userId, 
-        _id: { $in: notificationIds },
-        isRead: false 
-      },
-      { isRead: true }
-    );
-
-    console.log(`✅ Marked ${result.modifiedCount} notifications as read`);
-
+    // Mark notifications as read (in real app, update database)
+    mockNotifications.forEach(n => {
+      if (notificationIds.includes(n.id)) {
+        n.isRead = true;
+      }
+    });
+    
     res.json({
       success: true,
-      message: `${result.modifiedCount} notifications marked as read`,
-      modifiedCount: result.modifiedCount
+      message: `${notificationIds.length} notifications marked as read`,
+      modifiedCount: notificationIds.length
     });
-
   } catch (error) {
     console.error('❌ Error marking notifications as read:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to mark notifications as read',
-      message: error.message
+      error: 'Failed to mark notifications as read'
     });
   }
 });
 
-// PUT /api/notifications/mark-all-read - Mark all notifications as read
+// PUT /api/notifications/mark-all-read
 router.put('/mark-all-read', auth, async (req, res) => {
   try {
-    if (!req.user?.userId) {
-      return res.status(401).json({ success: false, error: 'User not authenticated' });
-    }
-
-    const result = await Notification.updateMany(
-      { userId: req.user.userId, isRead: false },
-      { isRead: true }
-    );
-
-    console.log(`✅ Marked ${result.modifiedCount} notifications as read`);
-
+    const unreadCount = mockNotifications.filter(n => !n.isRead).length;
+    
+    // Mark all as read
+    mockNotifications.forEach(n => {
+      n.isRead = true;
+    });
+    
     res.json({
       success: true,
-      message: `${result.modifiedCount} notifications marked as read`,
-      modifiedCount: result.modifiedCount
+      message: `${unreadCount} notifications marked as read`,
+      modifiedCount: unreadCount
     });
-
   } catch (error) {
     console.error('❌ Error marking all notifications as read:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to mark all notifications as read',
-      message: error.message
+      error: 'Failed to mark all notifications as read'
     });
   }
 });
 
-// POST /api/notifications/test - Create test notification
+// POST /api/notifications/test
 router.post('/test', auth, async (req, res) => {
   try {
-    if (!req.user?.userId) {
-      return res.status(401).json({ success: false, error: 'User not authenticated' });
-    }
-
-    const { title, message, type = 'system_announcement' } = req.body;
-
-    const notification = new Notification({
-      userId: req.user.userId,
-      type,
+    const { title, message } = req.body;
+    
+    const testNotification = {
+      id: Date.now().toString(),
+      type: 'system_announcement',
       title: title || 'Test Notification',
-      message: message || 'This is a test notification from GameZone API',
-      data: {
-        testNotification: true,
-        timestamp: new Date().toISOString()
-      },
+      message: message || 'This is a test notification',
+      data: { testNotification: true },
+      isRead: false,
       priority: 'medium',
-      actions: [
-        {
-          type: 'view',
-          label: 'View Details',
-          endpoint: '/api/notifications/test',
-          method: 'GET'
-        }
-      ]
-    });
-
-    await notification.save();
-
-    console.log('✅ Test notification created:', notification._id);
-
+      category: 'system',
+      actions: [],
+      createdAt: new Date().toISOString()
+    };
+    
+    mockNotifications.unshift(testNotification);
+    
     res.json({
       success: true,
       message: 'Test notification created successfully',
-      notification: {
-        id: notification._id,
-        title: notification.title,
-        message: notification.message,
-        type: notification.type,
-        createdAt: notification.createdAt
-      }
+      notification: testNotification
     });
-
   } catch (error) {
     console.error('❌ Error creating test notification:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create test notification',
-      message: error.message
+      error: 'Failed to create test notification'
     });
   }
 });
 
-// POST /api/notifications/:id/action - Execute notification action
+// POST /api/notifications/:id/action
 router.post('/:id/action', auth, async (req, res) => {
   try {
-    if (!req.user?.userId) {
-      return res.status(401).json({ success: false, error: 'User not authenticated' });
-    }
-
     const { id } = req.params;
     const { actionType } = req.body;
-
-    const notification = await Notification.findOne({ 
-      _id: id, 
-      userId: req.user.userId 
-    });
-
+    
+    const notification = mockNotifications.find(n => n.id === id);
+    
     if (!notification) {
       return res.status(404).json({
         success: false,
         error: 'Notification not found'
       });
     }
-
+    
     // Mark as read
     notification.isRead = true;
-    await notification.save();
-
-    console.log(`✅ Notification action executed: ${actionType}`);
-
+    
     res.json({
       success: true,
       message: `Action ${actionType} executed successfully`,
       notification: {
-        id: notification._id,
+        id: notification.id,
         type: notification.type,
         data: notification.data
       }
     });
-
   } catch (error) {
     console.error('❌ Error executing notification action:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to execute notification action',
-      message: error.message
+      error: 'Failed to execute notification action'
     });
   }
 });
 
-// DELETE /api/notifications/:id - Delete notification
+// DELETE /api/notifications/:id
 router.delete('/:id', auth, async (req, res) => {
   try {
-    if (!req.user?.userId) {
-      return res.status(401).json({ success: false, error: 'User not authenticated' });
-    }
-
     const { id } = req.params;
-
-    const result = await Notification.deleteOne({
-      _id: id,
-      userId: req.user.userId
-    });
-
-    if (result.deletedCount === 0) {
+    
+    const index = mockNotifications.findIndex(n => n.id === id);
+    
+    if (index === -1) {
       return res.status(404).json({
         success: false,
         error: 'Notification not found'
       });
     }
-
-    console.log(`✅ Notification deleted: ${id}`);
-
+    
+    mockNotifications.splice(index, 1);
+    
     res.json({
       success: true,
       message: 'Notification deleted successfully'
     });
-
   } catch (error) {
     console.error('❌ Error deleting notification:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to delete notification',
-      message: error.message
+      error: 'Failed to delete notification'
     });
   }
 });
-
-module.exports = router;
