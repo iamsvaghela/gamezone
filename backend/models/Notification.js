@@ -1,3 +1,4 @@
+// models/Notification.js
 const mongoose = require('mongoose');
 
 const notificationSchema = new mongoose.Schema({
@@ -52,7 +53,7 @@ const notificationSchema = new mongoose.Schema({
   actions: [{
     type: {
       type: String,
-      enum: ['confirm', 'cancel', 'view', 'update'],
+      enum: ['confirm', 'cancel', 'view', 'update', 'decline'],
       required: true
     },
     label: {
@@ -82,18 +83,15 @@ const notificationSchema = new mongoose.Schema({
     default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
   }
 }, {
-  timestamps: true,
-  indexes: [
-    { userId: 1, createdAt: -1 },
-    { userId: 1, isRead: 1 },
-    { type: 1, createdAt: -1 },
-    { expiresAt: 1 }, // TTL index
-    { scheduledFor: 1 } // For scheduled notifications
-  ]
+  timestamps: true
 });
 
-// Auto-delete expired notifications
+// Indexes
+notificationSchema.index({ userId: 1, createdAt: -1 });
+notificationSchema.index({ userId: 1, isRead: 1 });
+notificationSchema.index({ type: 1, createdAt: -1 });
 notificationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+notificationSchema.index({ scheduledFor: 1 });
 
 // Static methods
 notificationSchema.statics.createBookingNotification = async function(bookingData, type) {
@@ -167,7 +165,7 @@ notificationSchema.statics.createVendorNotification = async function(bookingData
         method: 'PUT'
       },
       {
-        type: 'cancel',
+        type: 'decline',
         label: 'Decline Booking',
         endpoint: `/api/vendor/bookings/${bookingData._id}/decline`,
         method: 'PUT'

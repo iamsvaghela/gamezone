@@ -6,7 +6,7 @@ const NotificationService = require('../services/NotificationService');
 const { validationResult } = require('express-validator');
 const mongoose = require('mongoose');
 const FirebaseService = require('../services/FirebaseService');
-const Notification = require('../models/Notification'); // Use the schema from notifications.js
+const Notification = require('../models/Notification');
 
 
 // @desc    Create new booking with notifications
@@ -124,144 +124,99 @@ const createBooking = async (req, res) => {
     });
     
     console.log('📢 Starting safe notification creation...');
-
-// Create notifications after booking is successfully created
-// 📢 SEND NOTIFICATIONS - WORKING VERSION
-console.log('📢 Creating booking notifications...');
-
-try {
-  const Notification = require('../models/Notification');
-  
-  // Create customer notification (same structure as test notification)
-  const customerNotification = await Notification.create({
-    userId: userId,
-    type: 'booking_created',
-    title: 'Booking Created Successfully',
-    message: `Your booking for ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot} has been created and is pending confirmation.`,
-    priority: 'medium',
-    category: 'booking',
-    data: {
-      bookingId: booking._id.toString(),
-      reference: booking.reference,
-      zoneId: booking.zoneId.toString(),
-      zoneName: zone.name,
-      date: booking.date,
-      timeSlot: booking.timeSlot,
-      duration: booking.duration,
-      totalAmount: booking.totalAmount,
-      testNotification: false, // Mark as real notification
-      timestamp: new Date().toISOString()
-    },
-    actions: [
-      {
-        type: 'view',
-        label: 'View Booking',
-        endpoint: `/api/bookings/${booking._id}`,
-        method: 'GET'
-      }
-    ]
-  });
-  
-  console.log('✅ Customer notification created:', customerNotification._id);
-  
-  // Create vendor notification if vendor exists
-  if (zone.vendorId && zone.vendorId._id) {
-    const vendorNotification = await Notification.create({
-      userId: zone.vendorId._id,
-      type: 'booking_created',
-      title: 'New Booking Request',
-      message: `${user.name} wants to book ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot}.`,
-      priority: 'high',
-      category: 'booking',
-      data: {
-        bookingId: booking._id.toString(),
-        reference: booking.reference,
-        zoneId: booking.zoneId.toString(),
-        zoneName: zone.name,
-        customerName: user.name,
-        customerEmail: user.email,
-        date: booking.date,
-        timeSlot: booking.timeSlot,
-        duration: booking.duration,
-        totalAmount: booking.totalAmount,
-        amount: booking.totalAmount, // For frontend compatibility
-        time: booking.timeSlot, // For frontend compatibility
-        testNotification: false,
-        timestamp: new Date().toISOString()
-      },
-      actions: [
-        {
-          type: 'confirm',
-          label: 'Confirm Booking',
-          endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
-          method: 'PUT'
+    // 📢 SEND NOTIFICATIONS - FIXED VERSION
+    console.log('📢 Creating booking notifications...');
+    
+    try {
+      // Create customer notification
+      const customerNotification = new Notification({
+        userId: userId,
+        type: 'booking_created',
+        title: 'Booking Created Successfully',
+        message: `Your booking for ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot} has been created and is pending confirmation.`,
+        priority: 'medium',
+        category: 'booking',
+        data: {
+          bookingId: booking._id.toString(),
+          reference: booking.reference,
+          zoneId: booking.zoneId.toString(),
+          zoneName: zone.name,
+          date: booking.date,
+          timeSlot: booking.timeSlot,
+          duration: booking.duration,
+          totalAmount: booking.totalAmount,
+          testNotification: false,
+          timestamp: new Date().toISOString()
         },
-        {
-          type: 'decline',
-          label: 'Decline Booking',
-          endpoint: `/api/vendor/bookings/${booking._id}/decline`,
-          method: 'PUT'
-        }
-      ]
-    });
-    
-    console.log('✅ Vendor notification created:', vendorNotification._id);
-  }
-  
-  console.log('🎉 All booking notifications created successfully');
-  
-} catch (notificationError) {
-  console.error('❌ Error creating booking notifications:', notificationError);
-  // Don't fail the booking creation if notifications fail
-}
-
-console.log('✅ Booking created successfully, notifications processed');
-    
-    // Return formatted response
-    res.status(201).json({
-      success: true,
-      message: 'Booking created successfully! Vendor will confirm shortly.',
-      booking: {
-        id: booking._id,
-        reference: booking.reference,
-        zone: {
-          id: zone._id,
-          name: zone.name,
-          location: {
-            address: zone.location.address
-          },
-          image: zone.images?.[0] || null
-        },
-        date: booking.date,
-        timeSlot: booking.timeSlot,
-        duration: booking.duration,
-        totalAmount: booking.totalAmount,
-        status: booking.status,
-        paymentStatus: booking.paymentStatus,
-        qrCode: booking.qrCode,
-        createdAt: booking.createdAt
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Error creating booking:', error);
-    
-    // Handle specific MongoDB errors
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        error: 'Duplicate booking detected',
-        message: 'A booking with these details already exists'
+        actions: [
+          {
+            type: 'view',
+            label: 'View Booking',
+            endpoint: `/api/bookings/${booking._id}`,
+            method: 'GET'
+          }
+        ]
       });
+      
+      await customerNotification.save();
+      console.log('✅ Customer notification created:', customerNotification._id);
+      
+      // Create vendor notification if vendor exists
+      if (zone.vendorId && zone.vendorId._id) {
+        const vendorNotification = new Notification({
+          userId: zone.vendorId._id,
+          type: 'booking_created',
+          title: 'New Booking Request',
+          message: `${user.name} wants to book ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot}.`,
+          priority: 'high',
+          category: 'booking',
+          data: {
+            bookingId: booking._id.toString(),
+            reference: booking.reference,
+            zoneId: booking.zoneId.toString(),
+            zoneName: zone.name,
+            customerName: user.name,
+            customerEmail: user.email,
+            date: booking.date,
+            timeSlot: booking.timeSlot,
+            duration: booking.duration,
+            totalAmount: booking.totalAmount,
+            amount: booking.totalAmount,
+            time: booking.timeSlot,
+            testNotification: false,
+            timestamp: new Date().toISOString()
+          },
+          actions: [
+            {
+              type: 'confirm',
+              label: 'Confirm Booking',
+              endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
+              method: 'PUT'
+            },
+            {
+              type: 'decline',
+              label: 'Decline Booking',
+              endpoint: `/api/vendor/bookings/${booking._id}/decline`,
+              method: 'PUT'
+            }
+          ]
+        });
+        
+        await vendorNotification.save();
+        console.log('✅ Vendor notification created:', vendorNotification._id);
+      }
+      
+      console.log('🎉 All booking notifications created successfully');
+      
+    } catch (notificationError) {
+      console.error('❌ Error creating booking notifications:', notificationError);
+      console.error('Error details:', {
+        name: notificationError.name,
+        message: notificationError.message,
+        stack: notificationError.stack
+      });
+      // Don't fail the booking creation if notifications fail
     }
-    
-    res.status(500).json({
-      success: false,
-      error: 'Failed to create booking',
-      message: error.message
-    });
-  }
-};
 
 // @desc    Cancel booking with notifications
 // @route   PUT /api/bookings/:id/cancel
