@@ -562,6 +562,58 @@ router.get('/settings', auth, async (req, res) => {
   }
 });
 
+
+// POST /api/notifications/create-test-booking-notification
+router.post('/create-test-booking-notification', auth, async (req, res) => {
+  try {
+    console.log('🧪 Creating test booking notification for user:', req.user.userId);
+    
+    const testNotification = await Notification.create({
+      userId: req.user.userId,
+      type: 'booking_created',
+      title: 'Test Booking Created',
+      message: 'Your test booking for Elite Gaming Zone is pending confirmation.',
+      priority: 'medium',
+      category: 'booking',
+      data: {
+        bookingId: 'test-booking-123',
+        reference: 'TEST-123',
+        zoneId: 'test-zone-456',
+        zoneName: 'Elite Gaming Zone',
+        date: new Date(),
+        timeSlot: '14:00',
+        totalAmount: 100,
+        amount: 100,
+        time: '14:00'
+      },
+      actions: [
+        {
+          type: 'view',
+          label: 'View Booking',
+          endpoint: '/api/bookings/test-booking-123',
+          method: 'GET'
+        }
+      ]
+    });
+    
+    console.log('✅ Test booking notification created:', testNotification._id);
+    
+    res.json({
+      success: true,
+      message: 'Test booking notification created successfully',
+      notification: testNotification
+    });
+    
+  } catch (error) {
+    console.error('❌ Error creating test booking notification:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create test booking notification',
+      message: error.message
+    });
+  }
+});
+
 // PUT /api/notifications/settings - Update notification settings
 router.put('/settings', auth, async (req, res) => {
   try {

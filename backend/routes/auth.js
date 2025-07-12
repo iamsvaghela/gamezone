@@ -14,6 +14,48 @@ const generateToken = (userId) => {
 };
 
 
+router.post('/update-push-token', auth, async (req, res) => {
+  try {
+    console.log('📱 Updating push token for user:', req.user.userId);
+    
+    const { pushToken } = req.body;
+    
+    if (!pushToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'Push token is required'
+      });
+    }
+    
+    const User = require('../models/User');
+    
+    // Update user's push token
+    await User.findByIdAndUpdate(req.user.userId, {
+      pushToken,
+      pushNotificationSettings: {
+        enabled: true,
+        email: true
+      }
+    });
+    
+    console.log('✅ Push token updated successfully');
+    
+    res.json({
+      success: true,
+      message: 'Push token updated successfully'
+    });
+    
+  } catch (error) {
+    console.error('❌ Error updating push token:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update push token',
+      message: error.message
+    });
+  }
+});
+
+
 // POST /api/auth/update-push-token
 router.post('/update-push-token', auth, async (req, res) => {
   try {

@@ -25,13 +25,9 @@ const userSchema = new mongoose.Schema({
       type: Boolean,
       default: true
     },
-    bookingUpdates: {
+    email: {
       type: Boolean,
       default: true
-    },
-    systemAnnouncements: {
-      type: Boolean,
-      default: false
     }
   },
   password: {
