@@ -67,12 +67,59 @@ const corsOptions = {
     'X-HTTP-Method-Override',
     'Access-Control-Allow-Origin'
   ],
-  exposedHeaders: ['X-Total-Count'],
+exposedHeaders: ['X-Total-Count'],
   maxAge: 86400,
   preflightContinue: false,
   optionsSuccessStatus: 204
 };
 
+
+mongoose.connection.on('connected', async () => {
+  console.log('✅ Connected to MongoDB successfully!');
+  console.log('🌐 Database:', mongoose.connection.name);
+  
+  // Check Notification model
+  try {
+    const Notification = require('./models/Notification');
+    console.log('✅ Notification model loaded successfully');
+    
+    // Test if we can query the collection
+    const count = await Notification.countDocuments();
+    console.log(`📊 Current notification count: ${count}`);
+    
+    // Check if the collection exists
+    const collections = await mongoose.connection.db.listCollections().toArray();
+    const notificationCollection = collections.find(col => col.name === 'notifications');
+    
+    if (notificationCollection) {
+      console.log('✅ Notifications collection exists in MongoDB');
+    } else {
+      console.log('⚠️  Notifications collection does not exist yet (will be created on first insert)');
+    }
+    
+    // Test creating a notification
+    console.log('🧪 Testing notification creation...');
+    const testNotification = new Notification({
+      userId: new mongoose.Types.ObjectId(),
+      type: 'system_announcement',
+      title: 'System Test',
+      message: 'Testing notification system on startup',
+      priority: 'low',
+      category: 'system'
+    });
+    
+    await testNotification.save();
+    console.log('✅ Test notification created successfully:', testNotification._id);
+    
+    // Clean up test notification
+    await Notification.deleteOne({ _id: testNotification._id });
+    console.log('🧹 Test notification cleaned up');
+    
+  } catch (error) {
+    console.error('❌ Error with Notification model:', error.message);
+    console.error('Stack:', error.stack);
+  }
+});
 // Apply CORS
 app.use(cors(corsOptions));
 

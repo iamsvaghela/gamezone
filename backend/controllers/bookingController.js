@@ -1,13 +1,11 @@
-// controllers/bookingController.js - Updated with full notification integration
+// controllers/bookingController.js - Fixed version with proper structure
 const Booking = require('../models/Booking');
 const GameZone = require('../models/GameZone');
 const User = require('../models/User');
+const Notification = require('../models/Notification');
 const NotificationService = require('../services/NotificationService');
 const { validationResult } = require('express-validator');
 const mongoose = require('mongoose');
-const FirebaseService = require('../services/FirebaseService');
-const Notification = require('../models/Notification');
-
 
 // @desc    Create new booking with notifications
 // @route   POST /api/bookings
@@ -25,7 +23,7 @@ const createBooking = async (req, res) => {
     }
     
     const { zoneId, date, timeSlot, duration, notes } = req.body;
-    const userId = req.user.userId; // Updated to use userId from token
+    const userId = req.user.userId;
     
     console.log('🔄 Creating booking with notifications:', { zoneId, date, timeSlot, duration, userId });
     
@@ -85,7 +83,7 @@ const createBooking = async (req, res) => {
     
     // Create QR code data
     const qrData = {
-      bookingId: null, // Will be set after creation
+      bookingId: null,
       reference,
       zoneId,
       zoneName: zone.name,
@@ -105,7 +103,7 @@ const createBooking = async (req, res) => {
       reference,
       notes,
       qrCode: JSON.stringify(qrData),
-      status: 'pending', // Set as pending, vendor will confirm
+      status: 'pending',
       paymentStatus: 'paid',
       paymentMethod: 'card'
     });
@@ -123,8 +121,7 @@ const createBooking = async (req, res) => {
       $set: { lastBookingAt: new Date() }
     });
     
-    console.log('📢 Starting safe notification creation...');
-    // 📢 SEND NOTIFICATIONS - FIXED VERSION
+    // 📢 CREATE NOTIFICATIONS
     console.log('📢 Creating booking notifications...');
     
     try {
@@ -217,6 +214,53 @@ const createBooking = async (req, res) => {
       });
       // Don't fail the booking creation if notifications fail
     }
+    
+    console.log('✅ Booking created successfully, notifications processed');
+    
+    // Return formatted response
+    res.status(201).json({
+      success: true,
+      message: 'Booking created successfully! Vendor will confirm shortly.',
+      booking: {
+        id: booking._id,
+        reference: booking.reference,
+        zone: {
+          id: zone._id,
+          name: zone.name,
+          location: {
+            address: zone.location.address
+          },
+          image: zone.images?.[0] || null
+        },
+        date: booking.date,
+        timeSlot: booking.timeSlot,
+        duration: booking.duration,
+        totalAmount: booking.totalAmount,
+        status: booking.status,
+        paymentStatus: booking.paymentStatus,
+        qrCode: booking.qrCode,
+        createdAt: booking.createdAt
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error creating booking:', error);
+    
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        error: 'Duplicate booking detected',
+        message: 'A booking with these details already exists'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create booking',
+      message: error.message
+    });
+  }
+}; // FIXED: Added missing closing brace
 
 // @desc    Cancel booking with notifications
 // @route   PUT /api/bookings/:id/cancel
@@ -288,8 +332,30 @@ const cancelBooking = async (req, res) => {
     console.log('📢 Sending cancellation notifications...');
     
     try {
-      // Use the enhanced notification service method
-      await NotificationService.handleBookingCancelled(booking, 'customer');
+      // Check if NotificationService exists and has the method
+      if (NotificationService && typeof NotificationService.handleBookingCancelled === 'function') {
+        await NotificationService.handleBookingCancelled(booking, 'customer');
+      } else {
+        // Fallback: Create notification directly
+        const zone = booking.zoneId;
+        const notification = new Notification({
+          userId: booking.userId,
+          type: 'booking_cancelled',
+          title: 'Booking Cancelled',
+          message: `Your booking for ${zone.name} on ${booking.date.toLocaleDateString()} has been cancelled.`,
+          priority: 'high',
+          category: 'booking',
+          data: {
+            bookingId: booking._id.toString(),
+            reference: booking.reference,
+            zoneId: zone._id.toString(),
+            zoneName: zone.name,
+            date: booking.date,
+            timeSlot: booking.timeSlot
+          }
+        });
+        await notification.save();
+      }
       
       console.log('✅ Cancellation notifications sent');
       
@@ -640,7 +706,7 @@ const getBooking = async (req, res) => {
     
     const formattedBooking = {
       ...formatBookingResponse(booking),
-      canBeCancelled: canBeCancelled && hoursDiff > 2 // Can cancel if more than 2 hours away
+      canBeCancelled: canBeCancelled && hoursDiff > 2
     };
     
     res.json({
