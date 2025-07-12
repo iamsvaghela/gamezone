@@ -123,156 +123,94 @@ const createBooking = async (req, res) => {
       $set: { lastBookingAt: new Date() }
     });
     
-    console.log('📢 Sending booking creation notifications...');
 
-try {
-  // 1. Create notification for VENDOR
-  if (zone.vendorId) {
-    const vendorNotification = await Notification.create({
-      userId: zone.vendorId._id,
-      type: 'booking_created',
-      category: 'booking',
-      title: '🔔 New Booking Request',
-      message: `${user.name} wants to book ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot}`,
-      priority: 'high',
-      data: {
-        bookingId: booking._id,
-        reference: booking.reference,
-        zoneId: booking.zoneId,
-        zoneName: zone.name,
-        customerName: user.name,
-        customerEmail: user.email,
-        date: booking.date,
-        timeSlot: booking.timeSlot,
-        duration: booking.duration,
-        totalAmount: booking.totalAmount,
-        amount: booking.totalAmount, // Added for frontend compatibility
-        time: booking.timeSlot // Added for frontend compatibility
-      },
-      actions: [
-        {
-          type: 'confirm',
-          label: 'Confirm Booking',
-          endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
-          method: 'PUT'
-        },
-        {
-          type: 'decline',
-          label: 'Decline Booking',
-          endpoint: `/api/vendor/bookings/${booking._id}/decline`,
-          method: 'PUT'
-        }
-      ]
-    });
-    
-    console.log('✅ Vendor notification created:', vendorNotification._id);
-    
-    // 2. Send Firebase push notification to vendor
+    // 📢 SEND NOTIFICATIONS - ENHANCED
+console.log('📢 Sending booking creation notifications...');
+
     try {
-      const User = require('../models/User');
-      const vendorWithToken = await User.findById(zone.vendorId._id);
+      // Import the Notification model
+      const Notification = require('../models/Notification');
       
-      if (vendorWithToken && vendorWithToken.pushToken) {
-        console.log('📱 Sending Firebase notification to vendor:', vendorWithToken.name);
-        
-        const FirebaseService = require('../services/FirebaseService');
-        const firebaseResult = await FirebaseService.sendPushNotification(
-          vendorWithToken.pushToken,
-          {
-            title: '🔔 New Booking Request',
-            body: `${user.name} wants to book ${zone.name}`,
-            data: {
-              type: 'booking_created',
-              bookingId: booking._id.toString(),
-              zoneId: booking.zoneId.toString(),
-              zoneName: zone.name,
-              customerName: user.name
-            }
-          }
-        );
-        
-        if (firebaseResult.success) {
-          console.log('✅ Firebase notification sent to vendor successfully');
-        } else {
-          console.error('❌ Firebase notification failed:', firebaseResult.error);
-        }
-      } else {
-        console.log('⚠️ No push token found for vendor:', zone.vendorId._id);
-      }
-    } catch (firebaseError) {
-      console.error('❌ Firebase notification error:', firebaseError);
-    }
-  }
-  
-  // 3. Create notification for CUSTOMER
-  const customerNotification = await Notification.create({
-    userId: userId,
-    type: 'booking_created',
-    category: 'booking',
-    title: '📅 Booking Created',
-    message: `Your booking for ${zone.name} is pending confirmation from the vendor.`,
-    priority: 'medium',
-    data: {
-      bookingId: booking._id,
-      reference: booking.reference,
-      zoneId: booking.zoneId,
-      zoneName: zone.name,
-      date: booking.date,
-      timeSlot: booking.timeSlot,
-      duration: booking.duration,
-      totalAmount: booking.totalAmount,
-      amount: booking.totalAmount, // Added for frontend compatibility
-      time: booking.timeSlot // Added for frontend compatibility
-    },
-    actions: [
-      {
-        type: 'view',
-        label: 'View Booking',
-        endpoint: `/api/bookings/${booking._id}`,
-        method: 'GET'
-      }
-    ]
-  });
-  
-  console.log('✅ Customer notification created:', customerNotification._id);
-  
-  // 4. Send Firebase push notification to customer
-  try {
-    if (user.pushToken) {
-      console.log('📱 Sending Firebase notification to customer:', user.name);
-      
-      const firebaseResult = await FirebaseService.sendPushNotification(
-        user.pushToken,
-        {
-          title: '📅 Booking Created',
-          body: `Your booking for ${zone.name} is pending confirmation.`,
+      // 1. Create notification for VENDOR (if vendor exists)
+      if (zone.vendorId) {
+        const vendorNotification = await Notification.create({
+          userId: zone.vendorId._id,
+          type: 'booking_created',
+          category: 'booking',
+          title: '🔔 New Booking Request',
+          message: `${user.name} wants to book ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot}`,
+          priority: 'high',
           data: {
-            type: 'booking_created',
-            bookingId: booking._id.toString(),
-            zoneId: booking.zoneId.toString(),
-            zoneName: zone.name
-          }
-        }
-      );
-      
-      if (firebaseResult.success) {
-        console.log('✅ Firebase notification sent to customer successfully');
-      } else {
-        console.error('❌ Firebase notification failed:', firebaseResult.error);
+            bookingId: booking._id,
+            reference: booking.reference,
+            zoneId: booking.zoneId,
+            zoneName: zone.name,
+            customerName: user.name,
+            customerEmail: user.email,
+            date: booking.date,
+            timeSlot: booking.timeSlot,
+            duration: booking.duration,
+            totalAmount: booking.totalAmount,
+            amount: booking.totalAmount, // For frontend compatibility
+            time: booking.timeSlot // For frontend compatibility
+          },
+          actions: [
+            {
+              type: 'confirm',
+              label: 'Confirm Booking',
+              endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
+              method: 'PUT'
+            },
+            {
+              type: 'decline',
+              label: 'Decline Booking',
+              endpoint: `/api/vendor/bookings/${booking._id}/decline`,
+              method: 'PUT'
+            }
+          ]
+        });
+        
+        console.log('✅ Vendor notification created:', vendorNotification._id);
       }
-    } else {
-      console.log('⚠️ No push token found for customer:', userId);
+      
+      // 2. Create notification for CUSTOMER
+      const customerNotification = await Notification.create({
+        userId: userId,
+        type: 'booking_created',
+        category: 'booking',
+        title: '📅 Booking Created',
+        message: `Your booking for ${zone.name} is pending confirmation from the vendor.`,
+        priority: 'medium',
+        data: {
+          bookingId: booking._id,
+          reference: booking.reference,
+          zoneId: booking.zoneId,
+          zoneName: zone.name,
+          date: booking.date,
+          timeSlot: booking.timeSlot,
+          duration: booking.duration,
+          totalAmount: booking.totalAmount,
+          amount: booking.totalAmount, // For frontend compatibility
+          time: booking.timeSlot // For frontend compatibility
+        },
+        actions: [
+          {
+            type: 'view',
+            label: 'View Booking',
+            endpoint: `/api/bookings/${booking._id}`,
+            method: 'GET'
+          }
+        ]
+      });
+      
+      console.log('✅ Customer notification created:', customerNotification._id);
+      console.log('🎉 All notifications created successfully');
+      
+    } catch (notificationError) {
+      console.error('❌ Error creating notifications:', notificationError);
+      // Don't fail the booking creation if notifications fail
     }
-  } catch (firebaseError) {
-    console.error('❌ Firebase notification error:', firebaseError);
-  }
-  
-  console.log('🎉 All notifications created successfully');
-  
-} catch (notificationError) {
-  console.error('❌ Error creating notifications:', notificationError);
-  // Don't fail the booking creation if notifications fail
-}
+    
 }
 
 
