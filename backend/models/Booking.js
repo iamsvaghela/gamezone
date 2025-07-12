@@ -262,6 +262,8 @@ bookingSchema.statics.getUserStats = function(userId) {
   ]);
 };
 
+
+
 // Static method to get zone's booking statistics
 bookingSchema.statics.getZoneStats = function(zoneId) {
   return this.aggregate([
@@ -330,5 +332,7 @@ bookingSchema.index({
   reference: 'text', 
   notes: 'text' 
 });
+
+
 
 module.exports = mongoose.model('Booking', bookingSchema);

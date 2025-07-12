@@ -91,6 +91,128 @@ const validateOperatingHours = (zone, timeSlot, duration) => {
   }
 };
 
+
+router.get('/test/notification-model', auth, async (req, res) => {
+  console.log('🧪 Testing Notification model...');
+  
+  try {
+    // Test 1: Check if model is loaded
+    const Notification = require('../models/Notification');
+    console.log('✅ Notification model imported');
+    
+    // Test 2: Check model properties
+    const modelInfo = {
+      modelName: Notification.modelName,
+      collectionName: Notification.collection ? Notification.collection.name : 'N/A',
+      isMongooseModel: Notification.prototype instanceof mongoose.Model,
+      schemaFields: Object.keys(Notification.schema ? Notification.schema.paths : {})
+    };
+    console.log('📋 Model info:', modelInfo);
+    
+    // Test 3: Try to create a test notification
+    console.log('🧪 Creating test notification...');
+    const testNotification = new Notification({
+      userId: req.user.userId,
+      type: 'system_announcement',
+      title: 'Model Test',
+      message: 'Testing if Notification model works',
+      priority: 'low',
+      category: 'system'
+    });
+    
+    console.log('💾 Saving test notification...');
+    await testNotification.save();
+    console.log('✅ Test notification saved:', testNotification._id);
+    
+    // Test 4: Query it back
+    const found = await Notification.findById(testNotification._id);
+    console.log('🔍 Query result:', found ? 'Found' : 'Not found');
+    
+    // Test 5: Count documents
+    const count = await Notification.countDocuments();
+    console.log('📊 Total notifications:', count);
+    
+    // Clean up
+    await Notification.deleteOne({ _id: testNotification._id });
+    console.log('🧹 Test notification cleaned up');
+    
+    res.json({
+      success: true,
+      message: 'Notification model is working correctly',
+      modelInfo,
+      testResults: {
+        created: true,
+        saved: true,
+        queried: !!found,
+        totalCount: count
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Notification model test failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Notification model test failed',
+      message: error.message,
+      stack: error.stack,
+      type: error.constructor.name
+    });
+  }
+});
+
+// POST /api/bookings/test/create-notification - Create a test notification
+router.post('/test/create-notification', auth, async (req, res) => {
+  console.log('🧪 POST /test/create-notification');
+  
+  try {
+    const Notification = require('../models/Notification');
+    
+    // Create notification with minimal required fields
+    const notificationData = {
+      userId: req.user.userId,
+      type: 'booking_created',
+      title: req.body.title || 'Test Booking Notification',
+      message: req.body.message || 'This is a test notification',
+      priority: 'medium',
+      category: 'booking'
+    };
+    
+    console.log('📝 Creating notification with data:', notificationData);
+    
+    const notification = new Notification(notificationData);
+    console.log('✅ Notification instance created');
+    
+    await notification.save();
+    console.log('✅ Notification saved to DB:', notification._id);
+    
+    // Verify it exists
+    const exists = await Notification.exists({ _id: notification._id });
+    console.log('🔍 Verification:', exists ? 'EXISTS' : 'NOT FOUND');
+    
+    res.json({
+      success: true,
+      message: 'Test notification created successfully',
+      notification: {
+        id: notification._id,
+        userId: notification.userId,
+        type: notification.type,
+        title: notification.title,
+        message: notification.message,
+        createdAt: notification.createdAt
+      },
+      verified: exists
+    });
+    
+  } catch (error) {
+    console.error('❌ Failed to create test notification:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create test notification',
+      message: error.message,
+      details: error
+    });
+  }
+});
 // GET /api/bookings - Get user bookings (MISSING ROUTE - ADDED)
 router.get('/', auth, userOnly, async (req, res) => {
   try {
