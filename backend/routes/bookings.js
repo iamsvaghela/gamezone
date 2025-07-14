@@ -872,4 +872,275 @@ router.get('/availability/:zoneId/:date', async (req, res) => {
   }
 });
 
+
+router.post('/test/notification-from-booking', auth, async (req, res) => {
+  console.log('🧪 Testing notification creation from booking context...');
+  
+  try {
+    const userId = req.user.userId;
+    const Notification = require('../models/Notification');
+    
+    console.log('📢 Step 1: Checking Notification model...');
+    console.log('📢 Model type:', typeof Notification);
+    console.log('📢 Model name:', Notification.modelName);
+    
+    console.log('📢 Step 2: Creating notification data...');
+    const notificationData = {
+      userId: new mongoose.Types.ObjectId(userId),
+      type: 'booking_created',
+      title: 'Test from Booking Route',
+      message: 'This notification was created from the booking route context',
+      priority: 'medium',
+      category: 'booking',
+      data: {
+        testFrom: 'booking_route',
+        timestamp: new Date().toISOString(),
+        userId: userId
+      }
+    };
+    
+    console.log('📢 Step 3: Creating notification instance...');
+    const notification = new Notification(notificationData);
+    
+    console.log('📢 Step 4: Validating notification...');
+    const validationError = notification.validateSync();
+    if (validationError) {
+      console.error('❌ Validation error:', validationError);
+      return res.status(400).json({
+        success: false,
+        error: 'Validation failed',
+        details: validationError.errors
+      });
+    }
+    
+    console.log('📢 Step 5: Saving to database...');
+    await notification.save();
+    
+    console.log('✅ Step 6: Notification saved:', notification._id);
+    
+    console.log('📢 Step 7: Verifying in database...');
+    const verification = await Notification.findById(notification._id);
+    
+    console.log('✅ Step 8: Verification result:', verification ? 'FOUND' : 'NOT FOUND');
+    
+    res.json({
+      success: true,
+      message: 'Notification created successfully from booking context',
+      notification: {
+        id: notification._id,
+        title: notification.title,
+        message: notification.message,
+        createdAt: notification.createdAt
+      },
+      verified: !!verification,
+      debug: {
+        modelType: typeof Notification,
+        modelName: Notification.modelName,
+        validationPassed: !validationError
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Test failed:', error);
+    console.error('❌ Error type:', error.constructor.name);
+    console.error('❌ Error message:', error.message);
+    console.error('❌ Error stack:', error.stack);
+    
+    res.status(500).json({
+      success: false,
+      error: 'Test notification creation failed',
+      message: error.message,
+      type: error.constructor.name,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// Compare with direct service call
+router.post('/test/notification-service', auth, async (req, res) => {
+  console.log('🧪 Testing NotificationService...');
+  
+  try {
+    const NotificationService = require('../services/NotificationService');
+    const userId = req.user.userId;
+    
+    const notificationData = {
+      type: 'booking_created',
+      title: 'Test from Service',
+      message: 'This notification was created using NotificationService',
+      priority: 'medium',
+      category: 'booking',
+      data: {
+        testFrom: 'notification_service',
+        timestamp: new Date().toISOString()
+      }
+    };
+    
+    console.log('📢 Calling NotificationService.createNotification...');
+    const notification = await NotificationService.createNotification(userId, notificationData);
+    
+    console.log('✅ Service call successful:', notification._id);
+    
+    res.json({
+      success: true,
+      message: 'Notification created via service',
+      notification: {
+        id: notification._id,
+        title: notification.title,
+        createdAt: notification.createdAt
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Service test failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Service notification creation failed',
+      message: error.message
+    });
+  }
+});
+
+// Simulate booking notification creation
+router.post('/test/simulate-booking-notification', auth, async (req, res) => {
+  console.log('🧪 Simulating booking notification creation...');
+  
+  try {
+    const userId = req.user.userId;
+    const Notification = require('../models/Notification');
+    
+    // Simulate a booking object
+    const mockBooking = {
+      _id: new mongoose.Types.ObjectId(),
+      reference: 'TEST-' + Date.now(),
+      zoneId: new mongoose.Types.ObjectId(),
+      userId: userId,
+      date: new Date(),
+      timeSlot: '14:00',
+      duration: 2,
+      totalAmount: 100
+    };
+    
+    // Simulate a zone object
+    const mockZone = {
+      _id: mockBooking.zoneId,
+      name: 'Test Gaming Zone',
+      vendorId: {
+        _id: new mongoose.Types.ObjectId(),
+        name: 'Test Vendor',
+        email: 'vendor@test.com'
+      }
+    };
+    
+    // Simulate a user object
+    const mockUser = {
+      _id: userId,
+      name: 'Test User',
+      email: 'user@test.com'
+    };
+    
+    console.log('📢 Creating customer notification...');
+    const customerNotification = new Notification({
+      userId: new mongoose.Types.ObjectId(mockBooking.userId),
+      type: 'booking_created',
+      title: '🎮 Booking Created (Simulated)',
+      message: `Your booking for ${mockZone.name} on ${mockBooking.date.toLocaleDateString()} at ${mockBooking.timeSlot} has been created.`,
+      priority: 'medium',
+      category: 'booking',
+      data: {
+        bookingId: mockBooking._id.toString(),
+        reference: mockBooking.reference,
+        zoneId: mockBooking.zoneId.toString(),
+        zoneName: mockZone.name,
+        date: mockBooking.date.toISOString(),
+        timeSlot: mockBooking.timeSlot,
+        duration: mockBooking.duration,
+        totalAmount: mockBooking.totalAmount,
+        simulated: true
+      },
+      actions: [
+        {
+          type: 'view',
+          label: 'View Booking',
+          endpoint: `/api/bookings/${mockBooking._id}`,
+          method: 'GET'
+        }
+      ]
+    });
+    
+    await customerNotification.save();
+    console.log('✅ Customer notification created:', customerNotification._id);
+    
+    console.log('📢 Creating vendor notification...');
+    const vendorNotification = new Notification({
+      userId: new mongoose.Types.ObjectId(mockZone.vendorId._id),
+      type: 'booking_created',
+      title: '📋 New Booking Request (Simulated)',
+      message: `${mockUser.name} has requested to book ${mockZone.name}.`,
+      priority: 'high',
+      category: 'booking',
+      data: {
+        bookingId: mockBooking._id.toString(),
+        reference: mockBooking.reference,
+        zoneId: mockBooking.zoneId.toString(),
+        zoneName: mockZone.name,
+        customerName: mockUser.name,
+        customerEmail: mockUser.email,
+        date: mockBooking.date.toISOString(),
+        timeSlot: mockBooking.timeSlot,
+        duration: mockBooking.duration,
+        totalAmount: mockBooking.totalAmount,
+        simulated: true
+      },
+      actions: [
+        {
+          type: 'confirm',
+          label: 'Confirm Booking',
+          endpoint: `/api/vendor/bookings/${mockBooking._id}/confirm`,
+          method: 'PUT'
+        },
+        {
+          type: 'decline',
+          label: 'Decline Booking',
+          endpoint: `/api/vendor/bookings/${mockBooking._id}/decline`,
+          method: 'PUT'
+        }
+      ]
+    });
+    
+    await vendorNotification.save();
+    console.log('✅ Vendor notification created:', vendorNotification._id);
+    
+    // Verify both notifications
+    const customerCheck = await Notification.findById(customerNotification._id);
+    const vendorCheck = await Notification.findById(vendorNotification._id);
+    
+    res.json({
+      success: true,
+      message: 'Simulated booking notifications created successfully',
+      notifications: {
+        customer: {
+          id: customerNotification._id,
+          title: customerNotification.title,
+          verified: !!customerCheck
+        },
+        vendor: {
+          id: vendorNotification._id,
+          title: vendorNotification.title,
+          verified: !!vendorCheck
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Simulation failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Simulation failed',
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
 module.exports = router;
