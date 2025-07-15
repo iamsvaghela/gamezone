@@ -618,149 +618,177 @@ router.post('/', auth, userOnly, async (req, res) => {
     // Populate zone details for response
     await booking.populate('zoneId', 'name location images pricePerHour');
 
-    console.log('📢 === STARTING NOTIFICATION CREATION WITH STANDARD TYPES ===');
+   
+    console.log('📢 === CREATING DISTINCT NOTIFICATIONS FOR GAMER AND VENDOR ===');
 
-try {
-  const Notification = require('../models/Notification');
-  const User = require('../models/User');
-  
-  // Get user data
-  const user = await User.findById(req.user.userId);
-  if (!user) {
-    console.error('❌ User not found for notifications');
-    throw new Error('User not found');
-  }
-  
-  console.log('✅ User data loaded:', user.name, user.email);
-  
-  // Get zone with vendor data
-  const populatedZone = await GameZone.findById(zoneId).populate('vendorId');
-  
-  // 1. CREATE USER NOTIFICATION - Using standard type
-  console.log('📢 Creating USER notification - Booking Created');
-  
-  const userNotificationData = {
-    userId: req.user.userId,
-    type: 'booking_created', // This should be valid
-    title: '🎮 Booking Created - Awaiting Confirmation',
-    message: `Your booking request for ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot} has been submitted and is awaiting vendor confirmation.`,
-    priority: 'medium',
-    category: 'booking',
-    data: {
-      bookingId: booking._id.toString(),
-      reference: booking.reference,
-      zoneId: booking.zoneId.toString(),
-      zoneName: zone.name,
-      date: booking.date.toISOString(),
-      timeSlot: booking.timeSlot,
-      duration: booking.duration,
-      totalAmount: booking.totalAmount,
-      status: 'pending_confirmation',
-      createdFrom: 'booking_creation',
-      userType: 'customer'
-    },
-    actions: [
-      {
-        type: 'view',
-        label: 'View Booking',
-        endpoint: `/api/bookings/${booking._id}`,
-        method: 'GET'
-      },
-      {
-        type: 'cancel',
-        label: 'Cancel Request',
-        endpoint: `/api/bookings/${booking._id}/cancel`,
-        method: 'PUT'
+    try {
+      const Notification = require('../models/Notification');
+      const User = require('../models/User');
+      
+      // Get user data
+      const user = await User.findById(req.user.userId);
+      if (!user) {
+        console.error('❌ User not found for notifications');
+        throw new Error('User not found');
       }
-    ]
-  };
-  
-  const userNotification = new Notification(userNotificationData);
-  await userNotification.save();
-  console.log('✅ USER notification saved:', userNotification._id);
-  
-  // 2. CREATE VENDOR NOTIFICATION - Using standard type
-  if (populatedZone && populatedZone.vendorId && populatedZone.vendorId._id) {
-    console.log('📢 Creating VENDOR notification - Using booking_created type');
-    
-    const vendorNotificationData = {
-      userId: populatedZone.vendorId._id,
-      type: 'booking_created', // FIXED: Using standard type instead of 'booking_request'
-      title: '📋 New Booking Request - Action Required',
-      message: `${user.name} has requested to book "${zone.name}" on ${new Date(date).toLocaleDateString()} at ${timeSlot} for ${duration} hour${duration > 1 ? 's' : ''}. Please confirm or decline this booking.`,
-      priority: 'high',
-      category: 'booking',
-      data: {
-        bookingId: booking._id.toString(),
-        reference: booking.reference,
-        zoneId: booking.zoneId.toString(),
-        zoneName: zone.name,
-        customerName: user.name,
-        customerEmail: user.email,
-        customerPhone: user.phone || 'Not provided',
-        date: booking.date.toISOString(),
-        timeSlot: booking.timeSlot,
-        duration: booking.duration,
-        totalAmount: booking.totalAmount,
-        status: 'pending_vendor_action',
-        createdFrom: 'booking_creation',
-        userType: 'vendor',
-        isVendorRequest: true // Add flag to distinguish vendor notifications
-      },
-      actions: [
-        {
-          type: 'confirm',
-          label: 'Confirm Booking',
-          endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
-          method: 'PUT'
+      
+      console.log('✅ User data loaded:', user.name, user.email, 'Role:', user.role);
+      
+      // Get zone with vendor data
+      const populatedZone = await GameZone.findById(zoneId).populate('vendorId');
+      
+      // 1. CREATE GAMER NOTIFICATION - Customer perspective
+      console.log('📢 Creating GAMER notification - Booking Submitted');
+      
+      const gamerNotificationData = {
+        userId: req.user.userId,
+        type: 'booking_submitted', // Different type for gamer
+        title: '🎮 Booking Submitted Successfully',
+        message: `Your booking request for "${zone.name}" on ${new Date(date).toLocaleDateString()} at ${timeSlot} has been submitted. You'll receive a confirmation once the vendor approves it.`,
+        priority: 'medium',
+        category: 'booking',
+        data: {
+          bookingId: booking._id.toString(),
+          reference: booking.reference,
+          zoneId: booking.zoneId.toString(),
+          zoneName: zone.name,
+          date: booking.date.toISOString(),
+          timeSlot: booking.timeSlot,
+          duration: booking.duration,
+          totalAmount: booking.totalAmount,
+          status: 'pending_vendor_approval',
+          createdFrom: 'booking_creation',
+          userType: 'gamer', // Specify user type
+          notificationFor: 'customer', // Who this notification is for
+          isCustomerNotification: true
         },
-        {
-          type: 'decline',
-          label: 'Decline Booking',
-          endpoint: `/api/vendor/bookings/${booking._id}/decline`,
-          method: 'PUT'
-        },
-        {
-          type: 'view',
-          label: 'View Details',
-          endpoint: `/api/vendor/bookings/${booking._id}`,
-          method: 'GET'
-        }
-      ]
-    };
-    
-    const vendorNotification = new Notification(vendorNotificationData);
-    await vendorNotification.save();
-    console.log('✅ VENDOR notification saved:', vendorNotification._id);
-    
-    // Verify both notifications
-    const userCheck = await Notification.findById(userNotification._id);
-    const vendorCheck = await Notification.findById(vendorNotification._id);
-    
-    console.log('🔍 Notification verification:');
-    console.log('  - User notification:', userCheck ? 'FOUND' : 'NOT FOUND');
-    console.log('  - Vendor notification:', vendorCheck ? 'FOUND' : 'NOT FOUND');
-    
-  } else {
-    console.log('⚠️ No vendor found for this zone, skipping vendor notification');
-  }
-  
-  // 3. UPDATE BOOKING STATUS TO PENDING (waiting for vendor confirmation)
-  booking.status = 'pending';
-  booking.paymentStatus = 'pending';
-  await booking.save();
-  console.log('✅ Booking status updated to pending');
-  
-  console.log('🎉 === NOTIFICATION CREATION COMPLETED ===');
-  
-} catch (notificationError) {
-  console.error('❌ === NOTIFICATION CREATION FAILED ===');
-  console.error('❌ Error:', notificationError.message);
-  console.error('❌ Stack:', notificationError.stack);
-  
-  // Don't fail the booking - just log the error
-  console.log('⚠️ Booking completed but notifications failed');
-}
+        actions: [
+          {
+            type: 'view',
+            label: 'View My Booking',
+            endpoint: `/api/bookings/${booking._id}`,
+            method: 'GET'
+          },
+          {
+            type: 'cancel',
+            label: 'Cancel Request',
+            endpoint: `/api/bookings/${booking._id}/cancel`,
+            method: 'PUT'
+          }
+        ]
+      };
+      
+      const gamerNotification = new Notification(gamerNotificationData);
+      await gamerNotification.save();
+      console.log('✅ GAMER notification saved:', gamerNotification._id);
+      
+      // 2. CREATE VENDOR NOTIFICATION - Business perspective
+      if (populatedZone && populatedZone.vendorId && populatedZone.vendorId._id) {
+        console.log('📢 Creating VENDOR notification - New Booking Request');
+        
+        const vendorNotificationData = {
+          userId: populatedZone.vendorId._id,
+          type: 'booking_request_received', // Different type for vendor
+          title: '📋 New Booking Request - Action Required',
+          message: `${user.name} wants to book "${zone.name}" on ${new Date(date).toLocaleDateString()} at ${timeSlot} for ${duration} hour${duration > 1 ? 's' : ''}. Please review and respond to this request.`,
+          priority: 'high',
+          category: 'booking',
+          data: {
+            bookingId: booking._id.toString(),
+            reference: booking.reference,
+            zoneId: booking.zoneId.toString(),
+            zoneName: zone.name,
+            customerName: user.name,
+            customerEmail: user.email,
+            customerPhone: user.phone || 'Not provided',
+            date: booking.date.toISOString(),
+            timeSlot: booking.timeSlot,
+            duration: booking.duration,
+            totalAmount: booking.totalAmount,
+            status: 'awaiting_vendor_response',
+            createdFrom: 'booking_creation',
+            userType: 'vendor', // Specify user type
+            notificationFor: 'business', // Who this notification is for
+            isVendorNotification: true, // Flag for vendor-specific notification
+            requiresAction: true // This notification requires vendor action
+          },
+          actions: [
+            {
+              type: 'confirm',
+              label: 'Accept Booking',
+              endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
+              method: 'PUT'
+            },
+            {
+              type: 'decline',
+              label: 'Decline Booking',
+              endpoint: `/api/vendor/bookings/${booking._id}/decline`,
+              method: 'PUT'
+            },
+            {
+              type: 'view',
+              label: 'View Details',
+              endpoint: `/api/vendor/bookings/${booking._id}`,
+              method: 'GET'
+            }
+          ]
+        };
+        
+        const vendorNotification = new Notification(vendorNotificationData);
+        await vendorNotification.save();
+        console.log('✅ VENDOR notification saved:', vendorNotification._id);
+        
+        // 3. VERIFY NOTIFICATIONS ARE DISTINCT
+        console.log('🔍 Verifying notification distinctness...');
+        
+        const gamerCheck = await Notification.findById(gamerNotification._id);
+        const vendorCheck = await Notification.findById(vendorNotification._id);
+        
+        const comparison = {
+          gamer: {
+            id: gamerCheck._id,
+            type: gamerCheck.type,
+            title: gamerCheck.title,
+            userId: gamerCheck.userId.toString(),
+            userType: gamerCheck.data.userType,
+            notificationFor: gamerCheck.data.notificationFor
+          },
+          vendor: {
+            id: vendorCheck._id,
+            type: vendorCheck.type,
+            title: vendorCheck.title,
+            userId: vendorCheck.userId.toString(),
+            userType: vendorCheck.data.userType,
+            notificationFor: vendorCheck.data.notificationFor
+          }
+        };
+        
+        console.log('🔍 Notification comparison:', comparison);
+        console.log('✅ Notifications are distinct:', 
+          gamerCheck.type !== vendorCheck.type && 
+          gamerCheck.userId.toString() !== vendorCheck.userId.toString()
+        );
+        
+      } else {
+        console.log('⚠️ No vendor found for this zone, skipping vendor notification');
+      }
+      
+      // 4. UPDATE BOOKING STATUS
+      booking.status = 'pending';
+      booking.paymentStatus = 'pending';
+      await booking.save();
+      console.log('✅ Booking status updated to pending');
+      
+      console.log('🎉 === DISTINCT NOTIFICATION CREATION COMPLETED ===');
+      
+    } catch (notificationError) {
+      console.error('❌ === NOTIFICATION CREATION FAILED ===');
+      console.error('❌ Error:', notificationError.message);
+      console.error('❌ Stack:', notificationError.stack);
+      
+      // Don't fail the booking - just log the error
+      console.log('⚠️ Booking completed but notifications failed');
+    }
 
 
     res.status(201).json({
