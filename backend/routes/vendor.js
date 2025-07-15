@@ -531,19 +531,17 @@ router.get('/bookings', async (req, res) => {
   }
 });
 
-// @desc    Confirm booking
-// @route   PUT /api/vendor/bookings/:id/confirm
-// @access  Private (Vendor only)
-router.put('/bookings/:id/confirm', async (req, res) => {
+router.put('/:id/confirm', auth, vendorOnly, async (req, res) => {
   try {
     const { id } = req.params;
+    const { message } = req.body;
     const vendorId = req.user.userId;
-    const { notes } = req.body;
     
     console.log('✅ Vendor confirming booking:', id);
     
-    // Get booking with zone details
-    const booking = await Booking.findById(id).populate('zoneId');
+    const booking = await Booking.findById(id)
+      .populate('zoneId')
+      .populate('userId');
     
     if (!booking) {
       return res.status(404).json({
@@ -552,15 +550,13 @@ router.put('/bookings/:id/confirm', async (req, res) => {
       });
     }
     
-    // Verify vendor owns the zone
     if (booking.zoneId.vendorId.toString() !== vendorId) {
       return res.status(403).json({
         success: false,
-        error: 'You can only confirm bookings for your own zones'
+        error: 'Not authorized to confirm this booking'
       });
     }
     
-    // Check if booking can be confirmed
     if (booking.status !== 'pending') {
       return res.status(400).json({
         success: false,
@@ -570,72 +566,116 @@ router.put('/bookings/:id/confirm', async (req, res) => {
     
     // Update booking status
     booking.status = 'confirmed';
-    if (notes) {
-      booking.notes = booking.notes ? `${booking.notes}\n\nVendor notes: ${notes}` : `Vendor notes: ${notes}`;
+    booking.paymentStatus = 'paid';
+    booking.confirmedAt = new Date();
+    booking.confirmedBy = vendorId;
+    
+    if (message) {
+      booking.notes = `${booking.notes || ''}\nVendor confirmation: ${message}`;
     }
+    
     await booking.save();
     
-    // 📢 SEND CONFIRMATION NOTIFICATIONS
-    console.log('📢 Sending confirmation notifications...');
+    // Create confirmation notification for customer
+    console.log('📢 Creating customer confirmation notification...');
     
-    try {
-      // Get customer details
-      const customer = await User.findById(booking.userId);
-      
-      // Send notification to customer
-      await NotificationService.createNotification(booking.userId, {
-        type: 'booking_confirmed',
-        category: 'booking',
-        title: '🎉 Booking Confirmed!',
-        message: `Your booking for ${booking.zoneId.name} on ${booking.date.toLocaleDateString()} has been confirmed!`,
-        priority: 'high',
-        data: {
-          bookingId: booking._id,
-          reference: booking.reference,
-          zoneId: booking.zoneId._id,
-          zoneName: booking.zoneId.name,
-          date: booking.date,
-          timeSlot: booking.timeSlot,
-          duration: booking.duration,
-          totalAmount: booking.totalAmount,
-          vendorNotes: notes || null
+    const customerNotification = new Notification({
+      userId: booking.userId._id,
+      type: 'booking_confirmed',
+      title: '🎉 Booking Confirmed!',
+      message: `Great news! Your booking for "${booking.zoneId.name}" on ${booking.date.toLocaleDateString()} at ${booking.timeSlot} has been confirmed by the vendor.${message ? ` Message: "${message}"` : ''}`,
+      priority: 'high',
+      category: 'booking',
+      data: {
+        bookingId: booking._id.toString(),
+        reference: booking.reference,
+        zoneId: booking.zoneId._id.toString(),
+        zoneName: booking.zoneId.name,
+        date: booking.date.toISOString(),
+        timeSlot: booking.timeSlot,
+        duration: booking.duration,
+        totalAmount: booking.totalAmount,
+        status: 'confirmed',
+        confirmedAt: booking.confirmedAt.toISOString(),
+        vendorMessage: message || null,
+        createdFrom: 'booking_confirmation',
+        userType: 'customer'
+      },
+      actions: [
+        {
+          type: 'view', // Fixed: use 'view' instead of 'view_booking'
+          label: 'View Booking',
+          endpoint: `/api/bookings/${booking._id}`,
+          method: 'GET'
         },
-        actions: [
-          {
-            type: 'view',
-            label: 'View Booking',
-            endpoint: `/api/bookings/${booking._id}`,
-            method: 'GET'
-          }
-        ]
-      });
-      
-      // Send confirmation notification to vendor
-      await NotificationService.createNotification(vendorId, {
-        type: 'booking_confirmed',
-        category: 'booking',
-        title: '✅ Booking Confirmed',
-        message: `You confirmed the booking for ${booking.zoneId.name} on ${booking.date.toLocaleDateString()}`,
-        priority: 'medium',
-        data: {
-          bookingId: booking._id,
-          reference: booking.reference,
-          zoneId: booking.zoneId._id,
-          zoneName: booking.zoneId.name,
-          customerName: customer.name,
-          date: booking.date,
-          timeSlot: booking.timeSlot,
-          duration: booking.duration,
-          totalAmount: booking.totalAmount
+        {
+          type: 'contact', // Fixed: use 'contact' instead of 'contact_vendor'
+          label: 'Contact Vendor',
+          endpoint: `/api/zones/${booking.zoneId._id}/contact`,
+          method: 'GET'
         }
-      });
-      
-      console.log('✅ Confirmation notifications sent');
-      
-    } catch (notificationError) {
-      console.error('❌ Error sending confirmation notifications:', notificationError);
-      // Don't fail the confirmation if notifications fail
-    }
+      ]
+    });
+    
+    await customerNotification.save();
+    console.log('✅ Customer confirmation notification created:', customerNotification._id);
+    
+    // Create confirmation notification for vendor (record keeping)
+    console.log('📢 Creating vendor confirmation record...');
+    
+    const vendorNotification = new Notification({
+      userId: vendorId,
+      type: 'booking_confirmed',
+      title: '✅ Booking Confirmed',
+      message: `You have confirmed the booking for "${booking.zoneId.name}" requested by ${booking.userId.name}.`,
+      priority: 'medium',
+      category: 'booking',
+      data: {
+        bookingId: booking._id.toString(),
+        reference: booking.reference,
+        zoneId: booking.zoneId._id.toString(),
+        zoneName: booking.zoneId.name,
+        customerName: booking.userId.name,
+        customerEmail: booking.userId.email,
+        date: booking.date.toISOString(),
+        timeSlot: booking.timeSlot,
+        duration: booking.duration,
+        totalAmount: booking.totalAmount,
+        status: 'confirmed',
+        confirmedAt: booking.confirmedAt.toISOString(),
+        action: 'confirmed',
+        createdFrom: 'booking_confirmation',
+        userType: 'vendor'
+      },
+      actions: [
+        {
+          type: 'view', // Fixed: use 'view' instead of 'view_booking'
+          label: 'View Booking',
+          endpoint: `/api/vendor/bookings/${booking._id}`,
+          method: 'GET'
+        }
+      ]
+    });
+    
+    await vendorNotification.save();
+    console.log('✅ Vendor confirmation record created:', vendorNotification._id);
+    
+    // Mark original vendor request notification as read
+    await Notification.updateMany(
+      {
+        userId: vendorId,
+        'data.bookingId': booking._id.toString(),
+        type: 'booking_request'
+      },
+      {
+        $set: { 
+          isRead: true,
+          readAt: new Date()
+        }
+      }
+    );
+    
+    console.log('✅ Original vendor request notification marked as read');
     
     res.json({
       success: true,
@@ -644,13 +684,16 @@ router.put('/bookings/:id/confirm', async (req, res) => {
         id: booking._id,
         reference: booking.reference,
         status: booking.status,
-        zoneName: booking.zoneId.name,
-        customerName: customer?.name || 'Unknown',
-        date: booking.date,
-        timeSlot: booking.timeSlot,
-        duration: booking.duration,
-        totalAmount: booking.totalAmount,
-        notes: booking.notes
+        paymentStatus: booking.paymentStatus,
+        confirmedAt: booking.confirmedAt,
+        customer: {
+          name: booking.userId.name,
+          email: booking.userId.email
+        },
+        zone: {
+          name: booking.zoneId.name,
+          location: booking.zoneId.location
+        }
       }
     });
     
@@ -664,19 +707,25 @@ router.put('/bookings/:id/confirm', async (req, res) => {
   }
 });
 
-// @desc    Decline booking
-// @route   PUT /api/vendor/bookings/:id/decline
-// @access  Private (Vendor only)
-router.put('/bookings/:id/decline', async (req, res) => {
+// PUT /api/vendor/bookings/:id/decline - Decline booking
+router.put('/:id/decline', auth, vendorOnly, async (req, res) => {
   try {
     const { id } = req.params;
-    const vendorId = req.user.userId;
     const { reason } = req.body;
+    const vendorId = req.user.userId;
     
     console.log('❌ Vendor declining booking:', id);
     
-    // Get booking with zone details
-    const booking = await Booking.findById(id).populate('zoneId');
+    if (!reason) {
+      return res.status(400).json({
+        success: false,
+        error: 'Decline reason is required'
+      });
+    }
+    
+    const booking = await Booking.findById(id)
+      .populate('zoneId')
+      .populate('userId');
     
     if (!booking) {
       return res.status(404).json({
@@ -685,15 +734,13 @@ router.put('/bookings/:id/decline', async (req, res) => {
       });
     }
     
-    // Verify vendor owns the zone
     if (booking.zoneId.vendorId.toString() !== vendorId) {
       return res.status(403).json({
         success: false,
-        error: 'You can only decline bookings for your own zones'
+        error: 'Not authorized to decline this booking'
       });
     }
     
-    // Check if booking can be declined
     if (booking.status !== 'pending') {
       return res.status(400).json({
         success: false,
@@ -702,88 +749,118 @@ router.put('/bookings/:id/decline', async (req, res) => {
     }
     
     // Update booking status
-    booking.status = 'cancelled';
+    booking.status = 'declined';
     booking.paymentStatus = 'refunded';
-    booking.cancelledAt = new Date();
-    booking.cancellationReason = reason || 'Declined by vendor';
+    booking.declinedAt = new Date();
+    booking.declinedBy = vendorId;
+    booking.notes = `${booking.notes || ''}\nDeclined by vendor: ${reason}`;
     
     await booking.save();
     
-    // 📢 SEND DECLINE NOTIFICATIONS
-    console.log('📢 Sending decline notifications...');
+    // Create decline notification for customer
+    console.log('📢 Creating customer decline notification...');
     
-    try {
-      // Get customer details
-      const customer = await User.findById(booking.userId);
-      
-      // Send notification to customer
-      await NotificationService.createNotification(booking.userId, {
-        type: 'booking_cancelled',
-        category: 'booking',
-        title: '❌ Booking Declined',
-        message: `Your booking for ${booking.zoneId.name} on ${booking.date.toLocaleDateString()} has been declined by the vendor.`,
-        priority: 'high',
-        data: {
-          bookingId: booking._id,
-          reference: booking.reference,
-          zoneId: booking.zoneId._id,
-          zoneName: booking.zoneId.name,
-          date: booking.date,
-          timeSlot: booking.timeSlot,
-          duration: booking.duration,
-          totalAmount: booking.totalAmount,
-          declineReason: reason || 'No reason provided',
-          refundAmount: booking.totalAmount
+    const customerNotification = new Notification({
+      userId: booking.userId._id,
+      type: 'booking_declined',
+      title: '❌ Booking Declined',
+      message: `Unfortunately, your booking request for "${booking.zoneId.name}" on ${booking.date.toLocaleDateString()} at ${booking.timeSlot} has been declined. Reason: ${reason}`,
+      priority: 'high',
+      category: 'booking',
+      data: {
+        bookingId: booking._id.toString(),
+        reference: booking.reference,
+        zoneId: booking.zoneId._id.toString(),
+        zoneName: booking.zoneId.name,
+        date: booking.date.toISOString(),
+        timeSlot: booking.timeSlot,
+        duration: booking.duration,
+        totalAmount: booking.totalAmount,
+        status: 'declined',
+        declinedAt: booking.declinedAt.toISOString(),
+        declineReason: reason,
+        createdFrom: 'booking_decline',
+        userType: 'customer'
+      },
+      actions: [
+        {
+          type: 'search', // Fixed: use 'search' instead of 'find_alternatives'
+          label: 'Find Alternative Times',
+          endpoint: `/api/bookings/availability/${booking.zoneId._id}/${booking.date.toISOString().split('T')[0]}`,
+          method: 'GET'
         },
-        actions: [
-          {
-            type: 'view',
-            label: 'Browse Other Zones',
-            endpoint: '/api/gamezones',
-            method: 'GET'
-          }
-        ]
-      });
-      
-      // Send notification to vendor
-      await NotificationService.createNotification(vendorId, {
-        type: 'booking_cancelled',
-        category: 'booking',
-        title: '❌ Booking Declined',
-        message: `You declined the booking for ${booking.zoneId.name} on ${booking.date.toLocaleDateString()}`,
-        priority: 'medium',
-        data: {
-          bookingId: booking._id,
-          reference: booking.reference,
-          zoneId: booking.zoneId._id,
-          zoneName: booking.zoneId.name,
-          customerName: customer.name,
-          date: booking.date,
-          timeSlot: booking.timeSlot,
-          declineReason: reason || 'No reason provided'
+        {
+          type: 'browse', // Fixed: use 'browse' instead of 'browse_zones'
+          label: 'Browse Other Zones',
+          endpoint: '/api/zones',
+          method: 'GET'
         }
-      });
-      
-      console.log('✅ Decline notifications sent');
-      
-    } catch (notificationError) {
-      console.error('❌ Error sending decline notifications:', notificationError);
-      // Don't fail the decline if notifications fail
-    }
+      ]
+    });
+    
+    await customerNotification.save();
+    console.log('✅ Customer decline notification created:', customerNotification._id);
+    
+    // Create decline notification for vendor (record keeping)
+    const vendorNotification = new Notification({
+      userId: vendorId,
+      type: 'booking_declined',
+      title: '❌ Booking Declined',
+      message: `You have declined the booking for "${booking.zoneId.name}" requested by ${booking.userId.name}.`,
+      priority: 'medium',
+      category: 'booking',
+      data: {
+        bookingId: booking._id.toString(),
+        reference: booking.reference,
+        zoneId: booking.zoneId._id.toString(),
+        zoneName: booking.zoneId.name,
+        customerName: booking.userId.name,
+        customerEmail: booking.userId.email,
+        date: booking.date.toISOString(),
+        timeSlot: booking.timeSlot,
+        duration: booking.duration,
+        totalAmount: booking.totalAmount,
+        status: 'declined',
+        declinedAt: booking.declinedAt.toISOString(),
+        declineReason: reason,
+        action: 'declined',
+        createdFrom: 'booking_decline',
+        userType: 'vendor'
+      }
+    });
+    
+    await vendorNotification.save();
+    console.log('✅ Vendor decline record created:', vendorNotification._id);
+    
+    // Mark original vendor request notification as read
+    await Notification.updateMany(
+      {
+        userId: vendorId,
+        'data.bookingId': booking._id.toString(),
+        type: 'booking_request'
+      },
+      {
+        $set: { 
+          isRead: true,
+          readAt: new Date()
+        }
+      }
+    );
     
     res.json({
       success: true,
-      message: 'Booking declined successfully. Customer will be notified and refunded.',
+      message: 'Booking declined successfully',
       booking: {
         id: booking._id,
         reference: booking.reference,
         status: booking.status,
-        zoneName: booking.zoneId.name,
-        customerName: customer?.name || 'Unknown',
-        date: booking.date,
-        timeSlot: booking.timeSlot,
-        cancellationReason: booking.cancellationReason,
-        refundAmount: booking.totalAmount
+        paymentStatus: booking.paymentStatus,
+        declinedAt: booking.declinedAt,
+        declineReason: reason,
+        customer: {
+          name: booking.userId.name,
+          email: booking.userId.email
+        }
       }
     });
     
