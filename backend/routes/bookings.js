@@ -6,6 +6,7 @@ const { auth, userOnly } = require('../middleware/auth');
 const mongoose = require('mongoose');
 const router = express.Router();
 
+
 // Helper function to convert time string to minutes
 const timeToMinutes = (timeString) => {
   if (!timeString || typeof timeString !== 'string') {
@@ -617,33 +618,32 @@ router.post('/', auth, userOnly, async (req, res) => {
     // Populate zone details for response
     await booking.populate('zoneId', 'name location images pricePerHour');
 
-    console.log('📢 === STARTING NOTIFICATION CREATION ===');
+    console.log('📢 === STARTING FIXED NOTIFICATION CREATION ===');
 
-    // SIMPLE NOTIFICATION CREATION - COPY FROM YOUR WORKING TEST
     try {
-      // Import Notification model (same way as your test)
       const Notification = require('../models/Notification');
-      console.log('✅ Notification model loaded');
-    
-      // 🔧 GET USER DATA - THIS WAS MISSING!
       const User = require('../models/User');
-      const user = await User.findById(req.user.userId);
       
+      // Get user data
+      const user = await User.findById(req.user.userId);
       if (!user) {
         console.error('❌ User not found for notifications');
         throw new Error('User not found');
       }
       
       console.log('✅ User data loaded:', user.name, user.email);
-    
-      // Create customer notification using EXACT same pattern as your test
-      console.log('📢 Creating customer notification...');
       
-      const customerNotificationData = {
-        userId: req.user.userId, // Use same format as test
+      // Get zone with vendor data
+      const populatedZone = await GameZone.findById(zoneId).populate('vendorId');
+      
+      // 1. CREATE USER NOTIFICATION - Booking Created (Pending Confirmation)
+      console.log('📢 Creating USER notification - Booking Created');
+      
+      const userNotificationData = {
+        userId: req.user.userId,
         type: 'booking_created',
-        title: 'Booking Created Successfully',
-        message: `Your booking for ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot} has been created.`,
+        title: '🎮 Booking Created - Awaiting Confirmation',
+        message: `Your booking request for ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot} has been submitted and is awaiting vendor confirmation.`,
         priority: 'medium',
         category: 'booking',
         data: {
@@ -655,46 +655,39 @@ router.post('/', auth, userOnly, async (req, res) => {
           timeSlot: booking.timeSlot,
           duration: booking.duration,
           totalAmount: booking.totalAmount,
-          createdFrom: 'booking_creation', // Debug flag
-          testNotification: false,
-          timestamp: new Date().toISOString()
+          status: 'pending_confirmation',
+          createdFrom: 'booking_creation',
+          userType: 'customer'
         },
         actions: [
           {
-            type: 'view',
+            type: 'view_booking',
             label: 'View Booking',
             endpoint: `/api/bookings/${booking._id}`,
             method: 'GET'
+          },
+          {
+            type: 'cancel_booking',
+            label: 'Cancel Request',
+            endpoint: `/api/bookings/${booking._id}/cancel`,
+            method: 'PUT'
           }
         ]
       };
-    
-      console.log('📢 Customer notification data prepared');
       
-      // Create notification instance (EXACT same way as test)
-      const customerNotification = new Notification(customerNotificationData);
-      console.log('📢 Customer notification instance created');
+      const userNotification = new Notification(userNotificationData);
+      await userNotification.save();
+      console.log('✅ USER notification saved:', userNotification._id);
       
-      // Save to database (EXACT same way as test)
-      await customerNotification.save();
-      console.log('✅ Customer notification saved to database:', customerNotification._id);
-    
-      // Verify it was saved
-      const customerCheck = await Notification.findById(customerNotification._id);
-      console.log('🔍 Customer notification verification:', customerCheck ? 'FOUND IN DB' : 'NOT FOUND');
-    
-      // 🔧 GET ZONE WITH POPULATED VENDOR DATA - THIS WAS ALSO MISSING!
-      const populatedZone = await GameZone.findById(zoneId).populate('vendorId');
-      
-      // Create vendor notification if vendor exists
+      // 2. CREATE VENDOR NOTIFICATION - Booking Request (Needs Action)
       if (populatedZone && populatedZone.vendorId && populatedZone.vendorId._id) {
-        console.log('📢 Creating vendor notification for:', populatedZone.vendorId.name);
+        console.log('📢 Creating VENDOR notification - Booking Request');
         
         const vendorNotificationData = {
-          userId: populatedZone.vendorId._id, // Use direct ID
-          type: 'booking_created',
-          title: 'New Booking Request',
-          message: `${user.name} wants to book ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot}.`,
+          userId: populatedZone.vendorId._id,
+          type: 'booking_request',
+          title: '📋 New Booking Request - Action Required',
+          message: `${user.name} has requested to book "${zone.name}" on ${new Date(date).toLocaleDateString()} at ${timeSlot} for ${duration} hour${duration > 1 ? 's' : ''}. Please confirm or decline this booking.`,
           priority: 'high',
           category: 'booking',
           data: {
@@ -704,47 +697,61 @@ router.post('/', auth, userOnly, async (req, res) => {
             zoneName: zone.name,
             customerName: user.name,
             customerEmail: user.email,
+            customerPhone: user.phone || 'Not provided',
             date: booking.date.toISOString(),
             timeSlot: booking.timeSlot,
             duration: booking.duration,
             totalAmount: booking.totalAmount,
+            status: 'pending_vendor_action',
             createdFrom: 'booking_creation',
-            testNotification: false,
-            timestamp: new Date().toISOString()
+            userType: 'vendor'
           },
           actions: [
             {
-              type: 'confirm',
+              type: 'confirm_booking',
               label: 'Confirm Booking',
               endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
               method: 'PUT'
             },
             {
-              type: 'decline',
+              type: 'decline_booking',
               label: 'Decline Booking',
               endpoint: `/api/vendor/bookings/${booking._id}/decline`,
               method: 'PUT'
+            },
+            {
+              type: 'view_booking',
+              label: 'View Details',
+              endpoint: `/api/vendor/bookings/${booking._id}`,
+              method: 'GET'
             }
           ]
         };
-    
+        
         const vendorNotification = new Notification(vendorNotificationData);
         await vendorNotification.save();
-        console.log('✅ Vendor notification saved to database:', vendorNotification._id);
-    
-        // Verify vendor notification
+        console.log('✅ VENDOR notification saved:', vendorNotification._id);
+        
+        // Verify both notifications
+        const userCheck = await Notification.findById(userNotification._id);
         const vendorCheck = await Notification.findById(vendorNotification._id);
-        console.log('🔍 Vendor notification verification:', vendorCheck ? 'FOUND IN DB' : 'NOT FOUND');
+        
+        console.log('🔍 Notification verification:');
+        console.log('  - User notification:', userCheck ? 'FOUND' : 'NOT FOUND');
+        console.log('  - Vendor notification:', vendorCheck ? 'FOUND' : 'NOT FOUND');
+        
       } else {
-        console.log('⚠️  No vendor found for this zone, skipping vendor notification');
+        console.log('⚠️ No vendor found for this zone, skipping vendor notification');
       }
-    
-      // Final count
-      const totalNotifications = await Notification.countDocuments();
-      console.log('📊 Total notifications in database:', totalNotifications);
       
-      console.log('🎉 === NOTIFICATION CREATION COMPLETED ===');
-    
+      // 3. UPDATE BOOKING STATUS TO PENDING (waiting for vendor confirmation)
+      booking.status = 'pending';
+      booking.paymentStatus = 'pending';
+      await booking.save();
+      console.log('✅ Booking status updated to pending');
+      
+      console.log('🎉 === FIXED NOTIFICATION CREATION COMPLETED ===');
+      
     } catch (notificationError) {
       console.error('❌ === NOTIFICATION CREATION FAILED ===');
       console.error('❌ Error:', notificationError.message);
@@ -753,8 +760,6 @@ router.post('/', auth, userOnly, async (req, res) => {
       // Don't fail the booking - just log the error
       console.log('⚠️ Booking completed but notifications failed');
     }
-    
-    console.log('📢 === NOTIFICATION CREATION SECTION ENDED ===');
 
 
     res.status(201).json({
@@ -808,6 +813,311 @@ router.post('/', auth, userOnly, async (req, res) => {
 });
 
 
+
+
+router.post('/test/complete-notification-flow', auth, async (req, res) => {
+  console.log('🧪 Testing complete notification flow...');
+  
+  try {
+    const userId = req.user.userId;
+    const Notification = require('../models/Notification');
+    const User = require('../models/User');
+    
+    // Create mock data
+    const mockCustomer = await User.findById(userId);
+    const mockVendor = {
+      _id: new mongoose.Types.ObjectId(),
+      name: 'Test Vendor',
+      email: 'vendor@test.com'
+    };
+    
+    const mockBooking = {
+      _id: new mongoose.Types.ObjectId(),
+      reference: 'FLOW-TEST-' + Date.now(),
+      zoneId: new mongoose.Types.ObjectId(),
+      userId: userId,
+      date: new Date(Date.now() + 24 * 60 * 60 * 1000), // Tomorrow
+      timeSlot: '15:00',
+      duration: 2,
+      totalAmount: 80
+    };
+    
+    const mockZone = {
+      _id: mockBooking.zoneId,
+      name: 'Test Gaming Zone',
+      vendorId: mockVendor._id
+    };
+    
+    const results = {
+      steps: [],
+      notifications: [],
+      errors: []
+    };
+    
+    // STEP 1: Create initial booking request notifications
+    console.log('📢 Step 1: Creating initial booking notifications...');
+    
+    // Customer notification - Booking created (pending)
+    const customerNotification1 = new Notification({
+      userId: mockCustomer._id,
+      type: 'booking_created',
+      title: '🎮 Booking Created - Awaiting Confirmation',
+      message: `Your booking request for ${mockZone.name} on ${mockBooking.date.toLocaleDateString()} at ${mockBooking.timeSlot} has been submitted.`,
+      priority: 'medium',
+      category: 'booking',
+      data: {
+        bookingId: mockBooking._id.toString(),
+        reference: mockBooking.reference,
+        status: 'pending_confirmation',
+        step: 1,
+        flowTest: true
+      }
+    });
+    
+    await customerNotification1.save();
+    results.notifications.push({
+      step: 1,
+      type: 'customer_booking_created',
+      id: customerNotification1._id,
+      title: customerNotification1.title
+    });
+    
+    // Vendor notification - Booking request (needs action)
+    const vendorNotification1 = new Notification({
+      userId: mockVendor._id,
+      type: 'booking_request',
+      title: '📋 New Booking Request - Action Required',
+      message: `${mockCustomer.name} has requested to book "${mockZone.name}". Please confirm or decline.`,
+      priority: 'high',
+      category: 'booking',
+      data: {
+        bookingId: mockBooking._id.toString(),
+        reference: mockBooking.reference,
+        customerName: mockCustomer.name,
+        status: 'pending_vendor_action',
+        step: 1,
+        flowTest: true
+      },
+      actions: [
+        {
+          type: 'confirm_booking',
+          label: 'Confirm Booking'
+        },
+        {
+          type: 'decline_booking',
+          label: 'Decline Booking'
+        }
+      ]
+    });
+    
+    await vendorNotification1.save();
+    results.notifications.push({
+      step: 1,
+      type: 'vendor_booking_request',
+      id: vendorNotification1._id,
+      title: vendorNotification1.title
+    });
+    
+    results.steps.push('Step 1: Initial booking notifications created');
+    
+    // Wait a bit to simulate time passage
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // STEP 2: Simulate vendor confirmation
+    console.log('📢 Step 2: Simulating vendor confirmation...');
+    
+    // Customer notification - Booking confirmed
+    const customerNotification2 = new Notification({
+      userId: mockCustomer._id,
+      type: 'booking_confirmed',
+      title: '🎉 Booking Confirmed!',
+      message: `Great news! Your booking for "${mockZone.name}" has been confirmed by the vendor.`,
+      priority: 'high',
+      category: 'booking',
+      data: {
+        bookingId: mockBooking._id.toString(),
+        reference: mockBooking.reference,
+        status: 'confirmed',
+        confirmedAt: new Date().toISOString(),
+        step: 2,
+        flowTest: true
+      }
+    });
+    
+    await customerNotification2.save();
+    results.notifications.push({
+      step: 2,
+      type: 'customer_booking_confirmed',
+      id: customerNotification2._id,
+      title: customerNotification2.title
+    });
+    
+    // Vendor notification - Confirmation record
+    const vendorNotification2 = new Notification({
+      userId: mockVendor._id,
+      type: 'booking_confirmed',
+      title: '✅ Booking Confirmed',
+      message: `You have confirmed the booking for "${mockZone.name}" requested by ${mockCustomer.name}.`,
+      priority: 'medium',
+      category: 'booking',
+      data: {
+        bookingId: mockBooking._id.toString(),
+        reference: mockBooking.reference,
+        customerName: mockCustomer.name,
+        status: 'confirmed',
+        action: 'confirmed',
+        step: 2,
+        flowTest: true
+      }
+    });
+    
+    await vendorNotification2.save();
+    results.notifications.push({
+      step: 2,
+      type: 'vendor_booking_confirmed',
+      id: vendorNotification2._id,
+      title: vendorNotification2.title
+    });
+    
+    // Mark original vendor request as read
+    await Notification.findByIdAndUpdate(vendorNotification1._id, {
+      isRead: true,
+      readAt: new Date()
+    });
+    
+    results.steps.push('Step 2: Vendor confirmation notifications created');
+    
+    // STEP 3: Verify all notifications exist and are accessible
+    console.log('📢 Step 3: Verifying notifications...');
+    
+    const customerNotifications = await Notification.find({
+      userId: mockCustomer._id,
+      'data.flowTest': true
+    }).sort({ createdAt: 1 });
+    
+    const vendorNotifications = await Notification.find({
+      userId: mockVendor._id,
+      'data.flowTest': true
+    }).sort({ createdAt: 1 });
+    
+    results.steps.push('Step 3: Verification completed');
+    
+    // Summary
+    const summary = {
+      totalNotifications: results.notifications.length,
+      customerNotifications: customerNotifications.length,
+      vendorNotifications: vendorNotifications.length,
+      expectedFlow: [
+        'Customer: Booking Created (Pending)',
+        'Vendor: Booking Request (Action Required)', 
+        'Customer: Booking Confirmed',
+        'Vendor: Booking Confirmed (Record)'
+      ],
+      actualFlow: results.notifications.map(n => `${n.type}: ${n.title}`)
+    };
+    
+    console.log('✅ Flow test completed successfully');
+    
+    res.json({
+      success: true,
+      message: 'Complete notification flow test successful',
+      results,
+      summary,
+      mockData: {
+        customer: {
+          id: mockCustomer._id,
+          name: mockCustomer.name,
+          email: mockCustomer.email
+        },
+        vendor: {
+          id: mockVendor._id,
+          name: mockVendor.name,
+          email: mockVendor.email
+        },
+        booking: {
+          id: mockBooking._id,
+          reference: mockBooking.reference,
+          zone: mockZone.name
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Flow test failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Flow test failed',
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// GET /api/bookings/test/notification-types - Show different notification types
+router.get('/test/notification-types', auth, async (req, res) => {
+  try {
+    const notificationTypes = {
+      customer_notifications: {
+        booking_created: {
+          title: 'Booking Created - Awaiting Confirmation',
+          message: 'Your booking request has been submitted and is awaiting vendor confirmation.',
+          priority: 'medium',
+          actions: ['view_booking', 'cancel_booking']
+        },
+        booking_confirmed: {
+          title: 'Booking Confirmed!',
+          message: 'Your booking has been confirmed by the vendor.',
+          priority: 'high',
+          actions: ['view_booking', 'contact_vendor']
+        },
+        booking_declined: {
+          title: 'Booking Declined',
+          message: 'Your booking request has been declined by the vendor.',
+          priority: 'high',
+          actions: ['find_alternatives', 'browse_zones']
+        }
+      },
+      vendor_notifications: {
+        booking_request: {
+          title: 'New Booking Request - Action Required',
+          message: 'A customer has requested to book your gaming zone.',
+          priority: 'high',
+          actions: ['confirm_booking', 'decline_booking', 'view_booking']
+        },
+        booking_confirmed: {
+          title: 'Booking Confirmed',
+          message: 'You have confirmed a booking request.',
+          priority: 'medium',
+          actions: ['view_booking']
+        },
+        booking_declined: {
+          title: 'Booking Declined',
+          message: 'You have declined a booking request.',
+          priority: 'medium',
+          actions: ['view_booking']
+        }
+      }
+    };
+    
+    res.json({
+      success: true,
+      message: 'Notification types reference',
+      types: notificationTypes,
+      flow: [
+        '1. Customer books → booking_created (customer) + booking_request (vendor)',
+        '2. Vendor confirms → booking_confirmed (customer) + booking_confirmed (vendor)',
+        '3. Vendor declines → booking_declined (customer) + booking_declined (vendor)'
+      ]
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get notification types',
+      message: error.message
+    });
+  }
+});
 
 router.post('/test/booking-notification-exact', auth, async (req, res) => {
   console.log('🧪 Testing exact booking notification pattern...');
