@@ -5,7 +5,6 @@ const GameZone = require('../models/GameZone');
 const { auth, userOnly } = require('../middleware/auth');
 const mongoose = require('mongoose');
 const router = express.Router();
-const zone = await GameZone.findById(zoneId);
 
 // Helper function to convert time string to minutes
 const timeToMinutes = (timeString) => {
