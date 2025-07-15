@@ -94,14 +94,15 @@ const createMockNotifications = (userId) => [
 router.get('/', auth, async (req, res) => {
   try {
     console.log('📋 GET /api/notifications - User:', req.user.userId);
+    console.log('📋 User ID type:', typeof req.user.userId);
     
     const { page = 1, limit = 20, unreadOnly = false, type, category } = req.query;
     
-    let notifications;
+    let notifications = [];
     
     // Try to get from database first
     try {
-      const query = { userId: req.user.userId };
+      const query = { userId: req.user.userId }; // ✅ Direct match without ObjectId conversion
       
       if (unreadOnly === 'true') {
         query.isRead = false;
@@ -113,33 +114,25 @@ router.get('/', auth, async (req, res) => {
         query.category = category;
       }
       
+      console.log('🔍 Database query:', query);
+      
       notifications = await Notification.find(query)
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
-        .limit(parseInt(limit));
+        .limit(parseInt(limit))
+        .lean(); // Add lean() for better performance
       
       console.log(`📊 Found ${notifications.length} notifications in database`);
       
-      // If no notifications found, use mock data
-      if (notifications.length === 0) {
-        console.log('📝 No notifications in database, using mock data');
-        notifications = createMockNotifications(req.user.userId);
-        
-        // Apply filters to mock data
-        if (unreadOnly === 'true') {
-          notifications = notifications.filter(n => !n.isRead);
-        }
-        if (type) {
-          notifications = notifications.filter(n => n.type === type);
-        }
-        if (category) {
-          notifications = notifications.filter(n => n.category === category);
-        }
-      }
+      // ✅ REMOVED: Don't use mock data if no notifications found
+      // Let the user see empty state instead
       
     } catch (dbError) {
-      console.error('❌ Database error, using mock data:', dbError.message);
-      notifications = createMockNotifications(req.user.userId);
+      console.error('❌ Database error:', dbError.message);
+      console.error('❌ Database stack:', dbError.stack);
+      
+      // Return empty array instead of mock data
+      notifications = [];
     }
     
     // Count unread notifications
@@ -149,16 +142,35 @@ router.get('/', auth, async (req, res) => {
         userId: req.user.userId, 
         isRead: false 
       });
+      console.log(`📊 Unread count from database: ${unreadCount}`);
     } catch (countError) {
       console.error('❌ Error counting unread notifications:', countError.message);
-      unreadCount = notifications.filter(n => !n.isRead).length;
+      unreadCount = 0;
     }
     
     console.log(`✅ Returning ${notifications.length} notifications, ${unreadCount} unread`);
+    console.log('📋 Sample notification:', notifications[0] ? {
+      id: notifications[0]._id,
+      title: notifications[0].title,
+      userId: notifications[0].userId,
+      userType: notifications[0].data?.userType,
+      notificationFor: notifications[0].data?.notificationFor
+    } : 'No notifications');
     
     res.json({
       success: true,
-      notifications,
+      notifications: notifications.map(notification => ({
+        id: notification._id.toString(),
+        type: notification.type,
+        title: notification.title,
+        message: notification.message,
+        data: notification.data || {},
+        isRead: notification.isRead,
+        priority: notification.priority,
+        category: notification.category,
+        actions: notification.actions || [],
+        createdAt: notification.createdAt
+      })),
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -178,25 +190,26 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
+
+
+
 // GET /api/notifications/unread-count - Get unread notification count
 router.get('/unread-count', auth, async (req, res) => {
   try {
     console.log('📊 GET /api/notifications/unread-count - User:', req.user.userId);
+    console.log('📊 User ID type:', typeof req.user.userId);
     
     let unreadCount = 0;
     
     try {
       unreadCount = await Notification.countDocuments({
-        userId: req.user.userId,
+        userId: req.user.userId, // ✅ Direct match without ObjectId conversion
         isRead: false
       });
       console.log(`📊 Database unread count: ${unreadCount}`);
     } catch (dbError) {
       console.error('❌ Database error for unread count:', dbError.message);
-      // Use mock data count
-      const mockNotifications = createMockNotifications(req.user.userId);
-      unreadCount = mockNotifications.filter(n => !n.isRead).length;
-      console.log(`📊 Mock unread count: ${unreadCount}`);
+      unreadCount = 0;
     }
     
     console.log(`✅ Returning unread count: ${unreadCount}`);
@@ -378,6 +391,62 @@ router.post('/test', auth, async (req, res) => {
   }
 });
 
+
+router.get('/debug/user-notifications', auth, async (req, res) => {
+  try {
+    console.log('🔍 DEBUG: Checking user notifications for:', req.user.userId);
+    
+    // Get all notifications for this user
+    const allNotifications = await Notification.find({
+      userId: req.user.userId
+    }).sort({ createdAt: -1 });
+    
+    console.log(`🔍 DEBUG: Found ${allNotifications.length} notifications`);
+    
+    // Get user info
+    const User = require('../models/User');
+    const user = await User.findById(req.user.userId);
+    
+    const debugInfo = {
+      userId: req.user.userId,
+      userRole: user?.role,
+      userEmail: user?.email,
+      totalNotifications: allNotifications.length,
+      notifications: allNotifications.map(n => ({
+        id: n._id.toString(),
+        title: n.title,
+        type: n.type,
+        userId: n.userId.toString(),
+        userType: n.data?.userType,
+        notificationFor: n.data?.notificationFor,
+        isVendorNotification: n.data?.isVendorNotification,
+        isCustomerNotification: n.data?.isCustomerNotification,
+        isRead: n.isRead,
+        createdAt: n.createdAt
+      }))
+    };
+    
+    console.log('🔍 DEBUG: User info:', {
+      userId: debugInfo.userId,
+      userRole: debugInfo.userRole,
+      userEmail: debugInfo.userEmail,
+      totalNotifications: debugInfo.totalNotifications
+    });
+    
+    res.json({
+      success: true,
+      debug: debugInfo
+    });
+    
+  } catch (error) {
+    console.error('❌ DEBUG error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Debug failed',
+      message: error.message
+    });
+  }
+});
 // POST /api/notifications/:id/action - Execute notification action
 router.post('/:id/action', auth, async (req, res) => {
   try {
