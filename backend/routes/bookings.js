@@ -621,6 +621,8 @@ router.post('/', auth, userOnly, async (req, res) => {
 
     console.log('📢 === STARTING NOTIFICATION CREATION ===');
 
+    console.log('📢 === STARTING NOTIFICATION CREATION ===');
+
 
     // SIMPLE NOTIFICATION CREATION - COPY FROM YOUR WORKING TEST
 try {
