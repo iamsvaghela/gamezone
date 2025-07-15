@@ -5,6 +5,7 @@ const GameZone = require('../models/GameZone');
 const { auth, userOnly } = require('../middleware/auth');
 const mongoose = require('mongoose');
 const router = express.Router();
+const zone = await GameZone.findById(zoneId);
 
 // Helper function to convert time string to minutes
 const timeToMinutes = (timeString) => {
@@ -617,136 +618,144 @@ router.post('/', auth, userOnly, async (req, res) => {
     // Populate zone details for response
     await booking.populate('zoneId', 'name location images pricePerHour');
 
-    console.log('✅ Booking created successfully:', booking._id);
-
     console.log('📢 === STARTING NOTIFICATION CREATION ===');
-
-    console.log('📢 === STARTING NOTIFICATION CREATION ===');
-
 
     // SIMPLE NOTIFICATION CREATION - COPY FROM YOUR WORKING TEST
-try {
-  // Import Notification model (same way as your test)
-  const Notification = require('../models/Notification');
-  console.log('✅ Notification model loaded');
-
-  // Create customer notification using EXACT same pattern as your test
-  console.log('📢 Creating customer notification...');
-  
-  const customerNotificationData = {
-    userId: req.user.userId, // Use same format as test
-    type: 'booking_created',
-    title: 'Booking Created Successfully',
-    message: `Your booking for ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot} has been created.`,
-    priority: 'medium',
-    category: 'booking',
-    data: {
-      bookingId: booking._id.toString(),
-      reference: booking.reference,
-      zoneId: booking.zoneId.toString(),
-      zoneName: zone.name,
-      date: booking.date.toISOString(),
-      timeSlot: booking.timeSlot,
-      duration: booking.duration,
-      totalAmount: booking.totalAmount,
-      createdFrom: 'booking_creation', // Debug flag
-      testNotification: false,
-      timestamp: new Date().toISOString()
-    },
-    actions: [
-      {
-        type: 'view',
-        label: 'View Booking',
-        endpoint: `/api/bookings/${booking._id}`,
-        method: 'GET'
-      }
-    ]
-  };
-
-  console.log('📢 Customer notification data prepared');
-  
-  // Create notification instance (EXACT same way as test)
-  const customerNotification = new Notification(customerNotificationData);
-  console.log('📢 Customer notification instance created');
-  
-  // Save to database (EXACT same way as test)
-  await customerNotification.save();
-  console.log('✅ Customer notification saved to database:', customerNotification._id);
-
-  // Verify it was saved
-  const customerCheck = await Notification.findById(customerNotification._id);
-  console.log('🔍 Customer notification verification:', customerCheck ? 'FOUND IN DB' : 'NOT FOUND');
-
-  // Create vendor notification if vendor exists
-  if (zone.vendorId && zone.vendorId._id) {
-    console.log('📢 Creating vendor notification...');
+    try {
+      // Import Notification model (same way as your test)
+      const Notification = require('../models/Notification');
+      console.log('✅ Notification model loaded');
     
-    const vendorNotificationData = {
-      userId: zone.vendorId._id, // Use direct ID
-      type: 'booking_created',
-      title: 'New Booking Request',
-      message: `${user.name} wants to book ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot}.`,
-      priority: 'high',
-      category: 'booking',
-      data: {
-        bookingId: booking._id.toString(),
-        reference: booking.reference,
-        zoneId: booking.zoneId.toString(),
-        zoneName: zone.name,
-        customerName: user.name,
-        customerEmail: user.email,
-        date: booking.date.toISOString(),
-        timeSlot: booking.timeSlot,
-        duration: booking.duration,
-        totalAmount: booking.totalAmount,
-        createdFrom: 'booking_creation',
-        testNotification: false,
-        timestamp: new Date().toISOString()
-      },
-      actions: [
-        {
-          type: 'confirm',
-          label: 'Confirm Booking',
-          endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
-          method: 'PUT'
+      // 🔧 GET USER DATA - THIS WAS MISSING!
+      const User = require('../models/User');
+      const user = await User.findById(req.user.userId);
+      
+      if (!user) {
+        console.error('❌ User not found for notifications');
+        throw new Error('User not found');
+      }
+      
+      console.log('✅ User data loaded:', user.name, user.email);
+    
+      // Create customer notification using EXACT same pattern as your test
+      console.log('📢 Creating customer notification...');
+      
+      const customerNotificationData = {
+        userId: req.user.userId, // Use same format as test
+        type: 'booking_created',
+        title: 'Booking Created Successfully',
+        message: `Your booking for ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot} has been created.`,
+        priority: 'medium',
+        category: 'booking',
+        data: {
+          bookingId: booking._id.toString(),
+          reference: booking.reference,
+          zoneId: booking.zoneId.toString(),
+          zoneName: zone.name,
+          date: booking.date.toISOString(),
+          timeSlot: booking.timeSlot,
+          duration: booking.duration,
+          totalAmount: booking.totalAmount,
+          createdFrom: 'booking_creation', // Debug flag
+          testNotification: false,
+          timestamp: new Date().toISOString()
         },
-        {
-          type: 'decline',
-          label: 'Decline Booking',
-          endpoint: `/api/vendor/bookings/${booking._id}/decline`,
-          method: 'PUT'
-        }
-      ]
-    };
-
-    const vendorNotification = new Notification(vendorNotificationData);
-    await vendorNotification.save();
-    console.log('✅ Vendor notification saved to database:', vendorNotification._id);
-
-    // Verify vendor notification
-    const vendorCheck = await Notification.findById(vendorNotification._id);
-    console.log('🔍 Vendor notification verification:', vendorCheck ? 'FOUND IN DB' : 'NOT FOUND');
-  }
-
-  // Final count
-  const totalNotifications = await Notification.countDocuments();
-  console.log('📊 Total notifications in database:', totalNotifications);
-  
-  console.log('🎉 === NOTIFICATION CREATION COMPLETED ===');
-
-} catch (notificationError) {
-  console.error('❌ === NOTIFICATION CREATION FAILED ===');
-  console.error('❌ Error:', notificationError.message);
-  console.error('❌ Stack:', notificationError.stack);
-  
-  // Don't fail the booking - just log the error
-  console.log('⚠️ Booking completed but notifications failed');
-}
-
-console.log('📢 === NOTIFICATION CREATION SECTION ENDED ===');
-
-
-
+        actions: [
+          {
+            type: 'view',
+            label: 'View Booking',
+            endpoint: `/api/bookings/${booking._id}`,
+            method: 'GET'
+          }
+        ]
+      };
+    
+      console.log('📢 Customer notification data prepared');
+      
+      // Create notification instance (EXACT same way as test)
+      const customerNotification = new Notification(customerNotificationData);
+      console.log('📢 Customer notification instance created');
+      
+      // Save to database (EXACT same way as test)
+      await customerNotification.save();
+      console.log('✅ Customer notification saved to database:', customerNotification._id);
+    
+      // Verify it was saved
+      const customerCheck = await Notification.findById(customerNotification._id);
+      console.log('🔍 Customer notification verification:', customerCheck ? 'FOUND IN DB' : 'NOT FOUND');
+    
+      // 🔧 GET ZONE WITH POPULATED VENDOR DATA - THIS WAS ALSO MISSING!
+      const populatedZone = await GameZone.findById(zoneId).populate('vendorId');
+      
+      // Create vendor notification if vendor exists
+      if (populatedZone && populatedZone.vendorId && populatedZone.vendorId._id) {
+        console.log('📢 Creating vendor notification for:', populatedZone.vendorId.name);
+        
+        const vendorNotificationData = {
+          userId: populatedZone.vendorId._id, // Use direct ID
+          type: 'booking_created',
+          title: 'New Booking Request',
+          message: `${user.name} wants to book ${zone.name} on ${new Date(date).toLocaleDateString()} at ${timeSlot}.`,
+          priority: 'high',
+          category: 'booking',
+          data: {
+            bookingId: booking._id.toString(),
+            reference: booking.reference,
+            zoneId: booking.zoneId.toString(),
+            zoneName: zone.name,
+            customerName: user.name,
+            customerEmail: user.email,
+            date: booking.date.toISOString(),
+            timeSlot: booking.timeSlot,
+            duration: booking.duration,
+            totalAmount: booking.totalAmount,
+            createdFrom: 'booking_creation',
+            testNotification: false,
+            timestamp: new Date().toISOString()
+          },
+          actions: [
+            {
+              type: 'confirm',
+              label: 'Confirm Booking',
+              endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
+              method: 'PUT'
+            },
+            {
+              type: 'decline',
+              label: 'Decline Booking',
+              endpoint: `/api/vendor/bookings/${booking._id}/decline`,
+              method: 'PUT'
+            }
+          ]
+        };
+    
+        const vendorNotification = new Notification(vendorNotificationData);
+        await vendorNotification.save();
+        console.log('✅ Vendor notification saved to database:', vendorNotification._id);
+    
+        // Verify vendor notification
+        const vendorCheck = await Notification.findById(vendorNotification._id);
+        console.log('🔍 Vendor notification verification:', vendorCheck ? 'FOUND IN DB' : 'NOT FOUND');
+      } else {
+        console.log('⚠️  No vendor found for this zone, skipping vendor notification');
+      }
+    
+      // Final count
+      const totalNotifications = await Notification.countDocuments();
+      console.log('📊 Total notifications in database:', totalNotifications);
+      
+      console.log('🎉 === NOTIFICATION CREATION COMPLETED ===');
+    
+    } catch (notificationError) {
+      console.error('❌ === NOTIFICATION CREATION FAILED ===');
+      console.error('❌ Error:', notificationError.message);
+      console.error('❌ Stack:', notificationError.stack);
+      
+      // Don't fail the booking - just log the error
+      console.log('⚠️ Booking completed but notifications failed');
+    }
+    
+    console.log('📢 === NOTIFICATION CREATION SECTION ENDED ===');
 
 
     res.status(201).json({
