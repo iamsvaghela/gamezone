@@ -619,7 +619,7 @@ router.post('/', auth, userOnly, async (req, res) => {
     await booking.populate('zoneId', 'name location images pricePerHour');
 
    
-    console.log('📢 === CREATING DISTINCT NOTIFICATIONS FOR GAMER AND VENDOR ===');
+    console.log('📢 === CREATING DISTINCT NOTIFICATIONS WITH CORRECT TYPES ===');
 
     try {
       const Notification = require('../models/Notification');
@@ -637,14 +637,14 @@ router.post('/', auth, userOnly, async (req, res) => {
       // Get zone with vendor data
       const populatedZone = await GameZone.findById(zoneId).populate('vendorId');
       
-      // 1. CREATE GAMER NOTIFICATION - Customer perspective
-      console.log('📢 Creating GAMER notification - Booking Submitted');
+      // 1. CREATE GAMER NOTIFICATION - Using valid enum type
+      console.log('📢 Creating GAMER notification - Using booking_created type');
       
       const gamerNotificationData = {
         userId: req.user.userId,
-        type: 'booking_submitted', // Different type for gamer
-        title: '🎮 Booking Submitted Successfully',
-        message: `Your booking request for "${zone.name}" on ${new Date(date).toLocaleDateString()} at ${timeSlot} has been submitted. You'll receive a confirmation once the vendor approves it.`,
+        type: 'booking_created', // ✅ FIXED: Using valid enum type
+        title: '🎮 Booking Request Submitted',
+        message: `Your booking request for "${zone.name}" on ${new Date(date).toLocaleDateString()} at ${timeSlot} has been submitted successfully. You'll receive a confirmation once the vendor reviews it.`,
         priority: 'medium',
         category: 'booking',
         data: {
@@ -658,9 +658,10 @@ router.post('/', auth, userOnly, async (req, res) => {
           totalAmount: booking.totalAmount,
           status: 'pending_vendor_approval',
           createdFrom: 'booking_creation',
-          userType: 'gamer', // Specify user type
+          userType: 'gamer', // Specify user type for filtering
           notificationFor: 'customer', // Who this notification is for
-          isCustomerNotification: true
+          isCustomerNotification: true, // Flag for customer notifications
+          bookingAction: 'submitted' // Additional context
         },
         actions: [
           {
@@ -682,15 +683,15 @@ router.post('/', auth, userOnly, async (req, res) => {
       await gamerNotification.save();
       console.log('✅ GAMER notification saved:', gamerNotification._id);
       
-      // 2. CREATE VENDOR NOTIFICATION - Business perspective
+      // 2. CREATE VENDOR NOTIFICATION - Using valid enum type
       if (populatedZone && populatedZone.vendorId && populatedZone.vendorId._id) {
-        console.log('📢 Creating VENDOR notification - New Booking Request');
+        console.log('📢 Creating VENDOR notification - Using booking_created type with vendor context');
         
         const vendorNotificationData = {
           userId: populatedZone.vendorId._id,
-          type: 'booking_request_received', // Different type for vendor
-          title: '📋 New Booking Request - Action Required',
-          message: `${user.name} wants to book "${zone.name}" on ${new Date(date).toLocaleDateString()} at ${timeSlot} for ${duration} hour${duration > 1 ? 's' : ''}. Please review and respond to this request.`,
+          type: 'booking_created', // ✅ FIXED: Using valid enum type
+          title: '📋 New Booking Request - Review Required',
+          message: `${user.name} has requested to book "${zone.name}" on ${new Date(date).toLocaleDateString()} at ${timeSlot} for ${duration} hour${duration > 1 ? 's' : ''}. Please review and respond to this booking request.`,
           priority: 'high',
           category: 'booking',
           data: {
@@ -707,10 +708,11 @@ router.post('/', auth, userOnly, async (req, res) => {
             totalAmount: booking.totalAmount,
             status: 'awaiting_vendor_response',
             createdFrom: 'booking_creation',
-            userType: 'vendor', // Specify user type
+            userType: 'vendor', // Specify user type for filtering
             notificationFor: 'business', // Who this notification is for
-            isVendorNotification: true, // Flag for vendor-specific notification
-            requiresAction: true // This notification requires vendor action
+            isVendorNotification: true, // Flag for vendor notifications
+            requiresAction: true, // This notification requires vendor action
+            bookingAction: 'review_required' // Additional context
           },
           actions: [
             {
@@ -751,7 +753,8 @@ router.post('/', auth, userOnly, async (req, res) => {
             title: gamerCheck.title,
             userId: gamerCheck.userId.toString(),
             userType: gamerCheck.data.userType,
-            notificationFor: gamerCheck.data.notificationFor
+            notificationFor: gamerCheck.data.notificationFor,
+            bookingAction: gamerCheck.data.bookingAction
           },
           vendor: {
             id: vendorCheck._id,
@@ -759,14 +762,17 @@ router.post('/', auth, userOnly, async (req, res) => {
             title: vendorCheck.title,
             userId: vendorCheck.userId.toString(),
             userType: vendorCheck.data.userType,
-            notificationFor: vendorCheck.data.notificationFor
+            notificationFor: vendorCheck.data.notificationFor,
+            bookingAction: vendorCheck.data.bookingAction
           }
         };
         
         console.log('🔍 Notification comparison:', comparison);
-        console.log('✅ Notifications are distinct:', 
-          gamerCheck.type !== vendorCheck.type && 
-          gamerCheck.userId.toString() !== vendorCheck.userId.toString()
+        console.log('✅ Notifications are distinct by:', 
+          `User IDs: ${gamerCheck.userId.toString() !== vendorCheck.userId.toString()}`,
+          `Titles: ${gamerCheck.title !== vendorCheck.title}`,
+          `User Types: ${gamerCheck.data.userType !== vendorCheck.data.userType}`,
+          `Booking Actions: ${gamerCheck.data.bookingAction !== vendorCheck.data.bookingAction}`
         );
         
       } else {
@@ -779,7 +785,7 @@ router.post('/', auth, userOnly, async (req, res) => {
       await booking.save();
       console.log('✅ Booking status updated to pending');
       
-      console.log('🎉 === DISTINCT NOTIFICATION CREATION COMPLETED ===');
+      console.log('🎉 === NOTIFICATION CREATION COMPLETED WITH CORRECT TYPES ===');
       
     } catch (notificationError) {
       console.error('❌ === NOTIFICATION CREATION FAILED ===');
@@ -842,6 +848,158 @@ router.post('/', auth, userOnly, async (req, res) => {
 });
 
 
+
+
+
+router.get('/test/check-notification-enum', auth, async (req, res) => {
+  try {
+    const Notification = require('../models/Notification');
+    
+    // Get the schema and check enum values
+    const schema = Notification.schema;
+    const typeField = schema.paths.type;
+    const categoryField = schema.paths.category;
+    const priorityField = schema.paths.priority;
+    
+    const enumInfo = {
+      type: {
+        hasEnum: !!typeField.enumValues,
+        enumValues: typeField.enumValues || [],
+        isRequired: typeField.isRequired
+      },
+      category: {
+        hasEnum: !!categoryField.enumValues,
+        enumValues: categoryField.enumValues || [],
+        isRequired: categoryField.isRequired
+      },
+      priority: {
+        hasEnum: !!priorityField.enumValues,
+        enumValues: priorityField.enumValues || [],
+        isRequired: priorityField.isRequired
+      }
+    };
+    
+    console.log('📋 Notification schema enum values:', enumInfo);
+    
+    res.json({
+      success: true,
+      message: 'Notification schema enum values',
+      enumInfo,
+      recommendations: {
+        validTypes: enumInfo.type.enumValues,
+        validCategories: enumInfo.category.enumValues,
+        validPriorities: enumInfo.priority.enumValues,
+        forBookings: {
+          gamerNotification: {
+            type: enumInfo.type.enumValues.includes('booking_created') ? 'booking_created' : enumInfo.type.enumValues[0],
+            category: 'booking',
+            priority: 'medium'
+          },
+          vendorNotification: {
+            type: enumInfo.type.enumValues.includes('booking_created') ? 'booking_created' : enumInfo.type.enumValues[0],
+            category: 'booking',
+            priority: 'high'
+          }
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Failed to check notification schema:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to check notification schema',
+      message: error.message
+    });
+  }
+});
+
+// Add this route to test notification creation with valid types
+router.post('/test/create-with-valid-types', auth, async (req, res) => {
+  try {
+    const Notification = require('../models/Notification');
+    
+    // Get valid enum values
+    const schema = Notification.schema;
+    const validTypes = schema.paths.type.enumValues || ['booking_created'];
+    const validCategories = schema.paths.category.enumValues || ['booking'];
+    const validPriorities = schema.paths.priority.enumValues || ['medium'];
+    
+    console.log('✅ Valid types:', validTypes);
+    console.log('✅ Valid categories:', validCategories);
+    console.log('✅ Valid priorities:', validPriorities);
+    
+    // Create gamer notification with valid enum values
+    const gamerNotification = new Notification({
+      userId: req.user.userId,
+      type: validTypes.includes('booking_created') ? 'booking_created' : validTypes[0],
+      title: '🎮 Booking Request Submitted (Valid Type)',
+      message: 'Your booking request has been submitted successfully.',
+      priority: validPriorities.includes('medium') ? 'medium' : validPriorities[0],
+      category: validCategories.includes('booking') ? 'booking' : validCategories[0],
+      data: {
+        userType: 'gamer',
+        notificationFor: 'customer',
+        isCustomerNotification: true,
+        testWithValidTypes: true
+      }
+    });
+    
+    await gamerNotification.save();
+    console.log('✅ Gamer notification created with valid types:', gamerNotification._id);
+    
+    // Create vendor notification with valid enum values
+    const vendorNotification = new Notification({
+      userId: req.user.userId, // Using same user for testing
+      type: validTypes.includes('booking_created') ? 'booking_created' : validTypes[0],
+      title: '📋 New Booking Request (Valid Type)',
+      message: 'A new booking request requires your attention.',
+      priority: validPriorities.includes('high') ? 'high' : validPriorities[0],
+      category: validCategories.includes('booking') ? 'booking' : validCategories[0],
+      data: {
+        userType: 'vendor',
+        notificationFor: 'business',
+        isVendorNotification: true,
+        requiresAction: true,
+        testWithValidTypes: true
+      }
+    });
+    
+    await vendorNotification.save();
+    console.log('✅ Vendor notification created with valid types:', vendorNotification._id);
+    
+    res.json({
+      success: true,
+      message: 'Notifications created with valid enum types',
+      validEnumValues: {
+        types: validTypes,
+        categories: validCategories,
+        priorities: validPriorities
+      },
+      createdNotifications: {
+        gamer: {
+          id: gamerNotification._id,
+          type: gamerNotification.type,
+          title: gamerNotification.title
+        },
+        vendor: {
+          id: vendorNotification._id,
+          type: vendorNotification.type,
+          title: vendorNotification.title
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Failed to create notifications with valid types:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create notifications with valid types',
+      message: error.message,
+      details: error.errors || error.stack
+    });
+  }
+});
 
 
 router.get('/test/notification-schema', auth, async (req, res) => {
