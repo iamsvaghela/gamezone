@@ -238,7 +238,6 @@ router.put('/bookings/:id/confirm', async (req, res) => {
   }
 });
 
-// PUT /api/vendor/bookings/:id/decline - Decline booking (MINIMAL VERSION)
 // Fixed decline route - Use 'cancelled' instead of 'declined'
 router.put('/bookings/:id/decline', async (req, res) => {
   try {
@@ -288,7 +287,7 @@ router.put('/bookings/:id/decline', async (req, res) => {
     
     const customerNotification = new Notification({
       userId: booking.userId._id,
-      type: 'booking_declined', // Keep notification type as 'booking_declined'
+      type: 'booking_cancelled', // FIXED: Use 'booking_cancelled' instead of 'booking_declined'
       title: '❌ Booking Declined',
       message: `Unfortunately, your booking request for "${booking.zoneId.name}" on ${booking.date.toLocaleDateString()} at ${booking.timeSlot} has been declined. Reason: ${reason}`,
       priority: 'high',
@@ -317,7 +316,7 @@ router.put('/bookings/:id/decline', async (req, res) => {
     // Create decline notification for vendor (WITHOUT ACTIONS)
     const vendorNotification = new Notification({
       userId: vendorId,
-      type: 'booking_declined', // Keep notification type as 'booking_declined'
+      type: 'booking_cancelled', // FIXED: Use 'booking_cancelled' instead of 'booking_declined'
       title: '❌ Booking Declined',
       message: `You have declined the booking for "${booking.zoneId.name}" requested by ${booking.userId.name}.`,
       priority: 'medium',
