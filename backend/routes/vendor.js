@@ -86,11 +86,10 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-// PUT /api/vendor/bookings/:id/confirm - Confirm booking
 router.put('/bookings/:id/confirm', async (req, res) => {
   try {
     const { id } = req.params;
-    const { message } = req.body; // Optional confirmation message
+    const { message } = req.body;
     const vendorId = req.user.userId;
     
     console.log('✅ Vendor confirming booking:', id);
@@ -106,14 +105,6 @@ router.put('/bookings/:id/confirm', async (req, res) => {
         error: 'Booking not found'
       });
     }
-    
-    // Verify vendor owns this zone - commented out for now
-    // if (booking.zoneId.vendorId.toString() !== vendorId) {
-    //   return res.status(403).json({
-    //     success: false,
-    //     error: 'Not authorized to confirm this booking'
-    //   });
-    // }
     
     // Check if booking is in pending status
     if (booking.status !== 'pending') {
@@ -134,8 +125,9 @@ router.put('/bookings/:id/confirm', async (req, res) => {
     }
     
     await booking.save();
+    console.log('✅ Booking status updated successfully');
     
-    // Create confirmation notification for customer
+    // Create confirmation notification for customer (WITHOUT ACTIONS)
     console.log('📢 Creating customer confirmation notification...');
     
     const customerNotification = new Notification({
@@ -159,27 +151,14 @@ router.put('/bookings/:id/confirm', async (req, res) => {
         vendorMessage: message || null,
         createdFrom: 'booking_confirmation',
         userType: 'customer'
-      },
-      actions: [
-        {
-          type: 'view', // FIXED: Changed from 'view_booking' to 'view'
-          label: 'View Booking',
-          endpoint: `/api/bookings/${booking._id}`,
-          method: 'GET'
-        },
-        {
-          type: 'contact', // FIXED: Changed from 'contact_vendor' to 'contact'
-          label: 'Contact Vendor',
-          endpoint: `/api/zones/${booking.zoneId._id}/contact`,
-          method: 'GET'
-        }
-      ]
+      }
+      // REMOVED ACTIONS TO AVOID ENUM VALIDATION ERROR
     });
     
     await customerNotification.save();
     console.log('✅ Customer confirmation notification created:', customerNotification._id);
     
-    // Create confirmation notification for vendor (record keeping)
+    // Create confirmation notification for vendor (WITHOUT ACTIONS)
     console.log('📢 Creating vendor confirmation record...');
     
     const vendorNotification = new Notification({
@@ -205,26 +184,19 @@ router.put('/bookings/:id/confirm', async (req, res) => {
         action: 'confirmed',
         createdFrom: 'booking_confirmation',
         userType: 'vendor'
-      },
-      actions: [
-        {
-          type: 'view', // FIXED: Changed from 'view_booking' to 'view'
-          label: 'View Booking',
-          endpoint: `/api/vendor/bookings/${booking._id}`,
-          method: 'GET'
-        }
-      ]
+      }
+      // REMOVED ACTIONS TO AVOID ENUM VALIDATION ERROR
     });
     
     await vendorNotification.save();
     console.log('✅ Vendor confirmation record created:', vendorNotification._id);
     
     // Mark original vendor request notification as read
-    await Notification.updateMany(
+    const updateResult = await Notification.updateMany(
       {
         userId: vendorId,
         'data.bookingId': booking._id.toString(),
-        type: 'booking_created' // FIXED: Changed from 'booking_request' to 'booking_created'
+        type: 'booking_created'
       },
       {
         $set: { 
@@ -234,7 +206,7 @@ router.put('/bookings/:id/confirm', async (req, res) => {
       }
     );
     
-    console.log('✅ Original vendor request notification marked as read');
+    console.log('✅ Original vendor request notification marked as read:', updateResult.modifiedCount);
     
     res.json({
       success: true,
@@ -266,7 +238,7 @@ router.put('/bookings/:id/confirm', async (req, res) => {
   }
 });
 
-// PUT /api/vendor/bookings/:id/decline - Decline booking
+// PUT /api/vendor/bookings/:id/decline - Decline booking (MINIMAL VERSION)
 router.put('/bookings/:id/decline', async (req, res) => {
   try {
     const { id } = req.params;
@@ -293,14 +265,6 @@ router.put('/bookings/:id/decline', async (req, res) => {
       });
     }
     
-    // Verify vendor owns this zone - commented out for now
-    // if (booking.zoneId.vendorId.toString() !== vendorId) {
-    //   return res.status(403).json({
-    //     success: false,
-    //     error: 'Not authorized to decline this booking'
-    //   });
-    // }
-    
     if (booking.status !== 'pending') {
       return res.status(400).json({
         success: false,
@@ -316,8 +280,9 @@ router.put('/bookings/:id/decline', async (req, res) => {
     booking.notes = `${booking.notes || ''}\nDeclined by vendor: ${reason}`;
     
     await booking.save();
+    console.log('✅ Booking status updated successfully');
     
-    // Create decline notification for customer
+    // Create decline notification for customer (WITHOUT ACTIONS)
     console.log('📢 Creating customer decline notification...');
     
     const customerNotification = new Notification({
@@ -341,27 +306,14 @@ router.put('/bookings/:id/decline', async (req, res) => {
         declineReason: reason,
         createdFrom: 'booking_decline',
         userType: 'customer'
-      },
-      actions: [
-        {
-          type: 'search', // FIXED: Using correct enum value
-          label: 'Find Alternative Times',
-          endpoint: `/api/bookings/availability/${booking.zoneId._id}/${booking.date.toISOString().split('T')[0]}`,
-          method: 'GET'
-        },
-        {
-          type: 'browse', // FIXED: Using correct enum value
-          label: 'Browse Other Zones',
-          endpoint: '/api/zones',
-          method: 'GET'
-        }
-      ]
+      }
+      // REMOVED ACTIONS TO AVOID ENUM VALIDATION ERROR
     });
     
     await customerNotification.save();
     console.log('✅ Customer decline notification created:', customerNotification._id);
     
-    // Create decline notification for vendor (record keeping)
+    // Create decline notification for vendor (WITHOUT ACTIONS)
     const vendorNotification = new Notification({
       userId: vendorId,
       type: 'booking_declined',
@@ -387,17 +339,18 @@ router.put('/bookings/:id/decline', async (req, res) => {
         createdFrom: 'booking_decline',
         userType: 'vendor'
       }
+      // REMOVED ACTIONS TO AVOID ENUM VALIDATION ERROR
     });
     
     await vendorNotification.save();
     console.log('✅ Vendor decline record created:', vendorNotification._id);
     
     // Mark original vendor request notification as read
-    await Notification.updateMany(
+    const updateResult = await Notification.updateMany(
       {
         userId: vendorId,
         'data.bookingId': booking._id.toString(),
-        type: 'booking_created' // FIXED: Changed from 'booking_request' to 'booking_created'
+        type: 'booking_created'
       },
       {
         $set: { 
@@ -406,6 +359,8 @@ router.put('/bookings/:id/decline', async (req, res) => {
         }
       }
     );
+    
+    console.log('✅ Original vendor request notification marked as read:', updateResult.modifiedCount);
     
     res.json({
       success: true,
