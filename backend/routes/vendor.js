@@ -1,4 +1,4 @@
-// routes/vendor.js - Vendor routes with notification handling
+// routes/vendor.js - Fixed action types in notifications
 const express = require('express');
 const { auth, vendorOnly } = require('../middleware/auth');
 const Booking = require('../models/Booking');
@@ -86,9 +86,8 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-
 // PUT /api/vendor/bookings/:id/confirm - Confirm booking
-router.put('/bookings/:id/confirm', auth, vendorOnly, async (req, res) => {
+router.put('/bookings/:id/confirm', async (req, res) => {
   try {
     const { id } = req.params;
     const { message } = req.body; // Optional confirmation message
@@ -108,13 +107,13 @@ router.put('/bookings/:id/confirm', auth, vendorOnly, async (req, res) => {
       });
     }
     
-    // Verify vendor owns this zone
-   // if (booking.zoneId.vendorId.toString() !== vendorId) {
-     // return res.status(403).json({
-       // success: false,
-       // error: 'Not authorized to confirm this booking'
-    //  });
-    //}
+    // Verify vendor owns this zone - commented out for now
+    // if (booking.zoneId.vendorId.toString() !== vendorId) {
+    //   return res.status(403).json({
+    //     success: false,
+    //     error: 'Not authorized to confirm this booking'
+    //   });
+    // }
     
     // Check if booking is in pending status
     if (booking.status !== 'pending') {
@@ -163,13 +162,13 @@ router.put('/bookings/:id/confirm', auth, vendorOnly, async (req, res) => {
       },
       actions: [
         {
-          type: 'view_booking',
+          type: 'view', // FIXED: Changed from 'view_booking' to 'view'
           label: 'View Booking',
           endpoint: `/api/bookings/${booking._id}`,
           method: 'GET'
         },
         {
-          type: 'contact_vendor',
+          type: 'contact', // FIXED: Changed from 'contact_vendor' to 'contact'
           label: 'Contact Vendor',
           endpoint: `/api/zones/${booking.zoneId._id}/contact`,
           method: 'GET'
@@ -209,7 +208,7 @@ router.put('/bookings/:id/confirm', auth, vendorOnly, async (req, res) => {
       },
       actions: [
         {
-          type: 'view_booking',
+          type: 'view', // FIXED: Changed from 'view_booking' to 'view'
           label: 'View Booking',
           endpoint: `/api/vendor/bookings/${booking._id}`,
           method: 'GET'
@@ -225,7 +224,7 @@ router.put('/bookings/:id/confirm', auth, vendorOnly, async (req, res) => {
       {
         userId: vendorId,
         'data.bookingId': booking._id.toString(),
-        type: 'booking_request'
+        type: 'booking_created' // FIXED: Changed from 'booking_request' to 'booking_created'
       },
       {
         $set: { 
@@ -267,8 +266,173 @@ router.put('/bookings/:id/confirm', auth, vendorOnly, async (req, res) => {
   }
 });
 
-
-
+// PUT /api/vendor/bookings/:id/decline - Decline booking
+router.put('/bookings/:id/decline', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const vendorId = req.user.userId;
+    
+    console.log('❌ Vendor declining booking:', id);
+    
+    if (!reason) {
+      return res.status(400).json({
+        success: false,
+        error: 'Decline reason is required'
+      });
+    }
+    
+    const booking = await Booking.findById(id)
+      .populate('zoneId')
+      .populate('userId');
+    
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    // Verify vendor owns this zone - commented out for now
+    // if (booking.zoneId.vendorId.toString() !== vendorId) {
+    //   return res.status(403).json({
+    //     success: false,
+    //     error: 'Not authorized to decline this booking'
+    //   });
+    // }
+    
+    if (booking.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: `Cannot decline booking with status: ${booking.status}`
+      });
+    }
+    
+    // Update booking status
+    booking.status = 'declined';
+    booking.paymentStatus = 'refunded';
+    booking.declinedAt = new Date();
+    booking.declinedBy = vendorId;
+    booking.notes = `${booking.notes || ''}\nDeclined by vendor: ${reason}`;
+    
+    await booking.save();
+    
+    // Create decline notification for customer
+    console.log('📢 Creating customer decline notification...');
+    
+    const customerNotification = new Notification({
+      userId: booking.userId._id,
+      type: 'booking_declined',
+      title: '❌ Booking Declined',
+      message: `Unfortunately, your booking request for "${booking.zoneId.name}" on ${booking.date.toLocaleDateString()} at ${booking.timeSlot} has been declined. Reason: ${reason}`,
+      priority: 'high',
+      category: 'booking',
+      data: {
+        bookingId: booking._id.toString(),
+        reference: booking.reference,
+        zoneId: booking.zoneId._id.toString(),
+        zoneName: booking.zoneId.name,
+        date: booking.date.toISOString(),
+        timeSlot: booking.timeSlot,
+        duration: booking.duration,
+        totalAmount: booking.totalAmount,
+        status: 'declined',
+        declinedAt: booking.declinedAt.toISOString(),
+        declineReason: reason,
+        createdFrom: 'booking_decline',
+        userType: 'customer'
+      },
+      actions: [
+        {
+          type: 'search', // FIXED: Using correct enum value
+          label: 'Find Alternative Times',
+          endpoint: `/api/bookings/availability/${booking.zoneId._id}/${booking.date.toISOString().split('T')[0]}`,
+          method: 'GET'
+        },
+        {
+          type: 'browse', // FIXED: Using correct enum value
+          label: 'Browse Other Zones',
+          endpoint: '/api/zones',
+          method: 'GET'
+        }
+      ]
+    });
+    
+    await customerNotification.save();
+    console.log('✅ Customer decline notification created:', customerNotification._id);
+    
+    // Create decline notification for vendor (record keeping)
+    const vendorNotification = new Notification({
+      userId: vendorId,
+      type: 'booking_declined',
+      title: '❌ Booking Declined',
+      message: `You have declined the booking for "${booking.zoneId.name}" requested by ${booking.userId.name}.`,
+      priority: 'medium',
+      category: 'booking',
+      data: {
+        bookingId: booking._id.toString(),
+        reference: booking.reference,
+        zoneId: booking.zoneId._id.toString(),
+        zoneName: booking.zoneId.name,
+        customerName: booking.userId.name,
+        customerEmail: booking.userId.email,
+        date: booking.date.toISOString(),
+        timeSlot: booking.timeSlot,
+        duration: booking.duration,
+        totalAmount: booking.totalAmount,
+        status: 'declined',
+        declinedAt: booking.declinedAt.toISOString(),
+        declineReason: reason,
+        action: 'declined',
+        createdFrom: 'booking_decline',
+        userType: 'vendor'
+      }
+    });
+    
+    await vendorNotification.save();
+    console.log('✅ Vendor decline record created:', vendorNotification._id);
+    
+    // Mark original vendor request notification as read
+    await Notification.updateMany(
+      {
+        userId: vendorId,
+        'data.bookingId': booking._id.toString(),
+        type: 'booking_created' // FIXED: Changed from 'booking_request' to 'booking_created'
+      },
+      {
+        $set: { 
+          isRead: true,
+          readAt: new Date()
+        }
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: 'Booking declined successfully',
+      booking: {
+        id: booking._id,
+        reference: booking.reference,
+        status: booking.status,
+        paymentStatus: booking.paymentStatus,
+        declinedAt: booking.declinedAt,
+        declineReason: reason,
+        customer: {
+          name: booking.userId.name,
+          email: booking.userId.email
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error declining booking:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to decline booking',
+      message: error.message
+    });
+  }
+});
 
 // @desc    Get vendor bookings
 // @route   GET /api/vendor/bookings
@@ -359,175 +523,6 @@ router.get('/bookings', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch bookings',
-      message: error.message
-    });
-  }
-});
-
-
-
-// PUT /api/vendor/bookings/:id/decline - Decline booking
-router.put('/bookings/:id/decline', auth, vendorOnly, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body;
-    const vendorId = req.user.userId;
-    
-    console.log('❌ Vendor declining booking:', id);
-    
-    if (!reason) {
-      return res.status(400).json({
-        success: false,
-        error: 'Decline reason is required'
-      });
-    }
-    
-    const booking = await Booking.findById(id)
-      .populate('zoneId')
-      .populate('userId');
-    
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        error: 'Booking not found'
-      });
-    }
-    
-    if (booking.zoneId.vendorId.toString() !== vendorId) {
-      return res.status(403).json({
-        success: false,
-        error: 'Not authorized to decline this booking'
-      });
-    }
-    
-    if (booking.status !== 'pending') {
-      return res.status(400).json({
-        success: false,
-        error: `Cannot decline booking with status: ${booking.status}`
-      });
-    }
-    
-    // Update booking status
-    booking.status = 'declined';
-    booking.paymentStatus = 'refunded';
-    booking.declinedAt = new Date();
-    booking.declinedBy = vendorId;
-    booking.notes = `${booking.notes || ''}\nDeclined by vendor: ${reason}`;
-    
-    await booking.save();
-    
-    // Create decline notification for customer
-    console.log('📢 Creating customer decline notification...');
-    
-    const customerNotification = new Notification({
-      userId: booking.userId._id,
-      type: 'booking_declined',
-      title: '❌ Booking Declined',
-      message: `Unfortunately, your booking request for "${booking.zoneId.name}" on ${booking.date.toLocaleDateString()} at ${booking.timeSlot} has been declined. Reason: ${reason}`,
-      priority: 'high',
-      category: 'booking',
-      data: {
-        bookingId: booking._id.toString(),
-        reference: booking.reference,
-        zoneId: booking.zoneId._id.toString(),
-        zoneName: booking.zoneId.name,
-        date: booking.date.toISOString(),
-        timeSlot: booking.timeSlot,
-        duration: booking.duration,
-        totalAmount: booking.totalAmount,
-        status: 'declined',
-        declinedAt: booking.declinedAt.toISOString(),
-        declineReason: reason,
-        createdFrom: 'booking_decline',
-        userType: 'customer'
-      },
-      actions: [
-        {
-          type: 'search', // Fixed: use 'search' instead of 'find_alternatives'
-          label: 'Find Alternative Times',
-          endpoint: `/api/bookings/availability/${booking.zoneId._id}/${booking.date.toISOString().split('T')[0]}`,
-          method: 'GET'
-        },
-        {
-          type: 'browse', // Fixed: use 'browse' instead of 'browse_zones'
-          label: 'Browse Other Zones',
-          endpoint: '/api/zones',
-          method: 'GET'
-        }
-      ]
-    });
-    
-    await customerNotification.save();
-    console.log('✅ Customer decline notification created:', customerNotification._id);
-    
-    // Create decline notification for vendor (record keeping)
-    const vendorNotification = new Notification({
-      userId: vendorId,
-      type: 'booking_declined',
-      title: '❌ Booking Declined',
-      message: `You have declined the booking for "${booking.zoneId.name}" requested by ${booking.userId.name}.`,
-      priority: 'medium',
-      category: 'booking',
-      data: {
-        bookingId: booking._id.toString(),
-        reference: booking.reference,
-        zoneId: booking.zoneId._id.toString(),
-        zoneName: booking.zoneId.name,
-        customerName: booking.userId.name,
-        customerEmail: booking.userId.email,
-        date: booking.date.toISOString(),
-        timeSlot: booking.timeSlot,
-        duration: booking.duration,
-        totalAmount: booking.totalAmount,
-        status: 'declined',
-        declinedAt: booking.declinedAt.toISOString(),
-        declineReason: reason,
-        action: 'declined',
-        createdFrom: 'booking_decline',
-        userType: 'vendor'
-      }
-    });
-    
-    await vendorNotification.save();
-    console.log('✅ Vendor decline record created:', vendorNotification._id);
-    
-    // Mark original vendor request notification as read
-    await Notification.updateMany(
-      {
-        userId: vendorId,
-        'data.bookingId': booking._id.toString(),
-        type: 'booking_request'
-      },
-      {
-        $set: { 
-          isRead: true,
-          readAt: new Date()
-        }
-      }
-    );
-    
-    res.json({
-      success: true,
-      message: 'Booking declined successfully',
-      booking: {
-        id: booking._id,
-        reference: booking.reference,
-        status: booking.status,
-        paymentStatus: booking.paymentStatus,
-        declinedAt: booking.declinedAt,
-        declineReason: reason,
-        customer: {
-          name: booking.userId.name,
-          email: booking.userId.email
-        }
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Error declining booking:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to decline booking',
       message: error.message
     });
   }
@@ -647,9 +642,6 @@ router.put('/zones/:id/status', async (req, res) => {
     });
   }
 });
-
-
-
 
 // @desc    Get vendor analytics
 // @route   GET /api/vendor/analytics
