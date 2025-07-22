@@ -1,4 +1,4 @@
-// server.js - Fixed CORS and error handling
+// server.js - Fixed CORS and error handling with improved route loading
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -67,18 +67,68 @@ const corsOptions = {
     'X-HTTP-Method-Override',
     'Access-Control-Allow-Origin'
   ],
-exposedHeaders: ['X-Total-Count'],
+  exposedHeaders: ['X-Total-Count'],
   maxAge: 86400,
   preflightContinue: false,
   optionsSuccessStatus: 204
 };
 
+// Apply CORS
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
+
+// Create HTTP server (Socket.IO setup - optional)
+const server = require('http').createServer(app);
+
+// Try to initialize Socket.IO (optional)
+let io;
+try {
+  const { initializeSocket } = require('./socket');
+  io = initializeSocket(server);
+  app.set('io', io);
+  console.log('✅ Socket.IO initialized');
+} catch (error) {
+  console.warn('⚠️  Socket.IO not available:', error.message);
+}
+
+// Middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Security headers
+app.use((req, res, next) => {
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'DENY');
+  res.header('X-XSS-Protection', '1; mode=block');
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  next();
+});
+
+// 🔧 ENHANCED Request logging
+app.use((req, res, next) => {
+  console.log(`🌐 ${req.method} ${req.path} - Origin: ${req.headers.origin || 'None'} - IP: ${req.ip}`);
+  next();
+});
+
+// Database Connection
+console.log('🔄 Connecting to MongoDB...');
+console.log('🔗 MongoDB URI:', process.env.MONGODB_URI ? 'Set (hidden for security)' : 'NOT SET');
+console.log('🌐 Environment:', process.env.NODE_ENV || 'development');
+
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/gamezone', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+});
 
 mongoose.connection.on('connected', async () => {
   console.log('✅ Connected to MongoDB successfully!');
   console.log('🌐 Database:', mongoose.connection.name);
   
-  // Check Notification model
+  // Check Notification model (optional)
   try {
     const Notification = require('./models/Notification');
     console.log('✅ Notification model loaded successfully');
@@ -117,65 +167,7 @@ mongoose.connection.on('connected', async () => {
     
   } catch (error) {
     console.error('❌ Error with Notification model:', error.message);
-    console.error('Stack:', error.stack);
   }
-});
-// Apply CORS
-app.use(cors(corsOptions));
-
-// Handle preflight requests
-app.options('*', cors(corsOptions));
-
-// Create HTTP server (Socket.IO setup - optional)
-const server = require('http').createServer(app);
-
-// Try to initialize Socket.IO (optional)
-let io;
-try {
-  const { initializeSocket } = require('./socket');
-  io = initializeSocket(server);
-  app.set('io', io);
-  console.log('✅ Socket.IO initialized');
-} catch (error) {
-  console.warn('⚠️  Socket.IO not available:', error.message);
-}
-
-// Middleware
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-app.use("/api/payment", require("./routes/payments"));
-
-// Security headers
-app.use((req, res, next) => {
-  res.header('X-Content-Type-Options', 'nosniff');
-  res.header('X-Frame-Options', 'DENY');
-  res.header('X-XSS-Protection', '1; mode=block');
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  next();
-});
-
-// 🔧 ENHANCED Request logging
-app.use((req, res, next) => {
-  console.log(`🌐 ${req.method} ${req.path} - Origin: ${req.headers.origin || 'None'} - IP: ${req.ip}`);
-  next();
-});
-
-// Database Connection
-console.log('🔄 Connecting to MongoDB...');
-console.log('🔗 MongoDB URI:', process.env.MONGODB_URI ? 'Set (hidden for security)' : 'NOT SET');
-console.log('🌐 Environment:', process.env.NODE_ENV || 'development');
-
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/gamezone', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-});
-
-mongoose.connection.on('connected', () => {
-  console.log('✅ Connected to MongoDB successfully!');
-  console.log('🌐 Database:', mongoose.connection.name);
 });
 
 mongoose.connection.on('error', (err) => {
@@ -186,48 +178,54 @@ mongoose.connection.on('disconnected', () => {
   console.log('⚠️  MongoDB disconnected');
 });
 
-// API Routes
-try {
-  app.use('/api/auth', require('./routes/auth'));
-  console.log('✅ Auth routes loaded');
-} catch (error) {
-  console.error('❌ Auth routes failed:', error.message);
-}
+// 🔧 IMPROVED API Routes Loading with better error handling
+const loadRoute = (routePath, routeName, apiPath) => {
+  try {
+    const route = require(routePath);
+    app.use(apiPath, route);
+    console.log(`✅ ${routeName} routes loaded at ${apiPath}`);
+    return true;
+  } catch (error) {
+    console.error(`❌ ${routeName} routes failed:`, error.message);
+    return false;
+  }
+};
 
-try {
-  app.use('/api/gamezones', require('./routes/gamezones'));
-  console.log('✅ GameZones routes loaded');
-} catch (error) {
-  console.error('❌ GameZones routes failed:', error.message);
-}
+// Load routes in proper order
+const routesStatus = {
+  auth: loadRoute('./routes/auth', 'Auth', '/api/auth'),
+  gamezones: loadRoute('./routes/gamezones', 'GameZones', '/api/gamezones'),
+  bookings: loadRoute('./routes/bookings', 'Bookings', '/api/bookings'),
+  vendor: loadRoute('./routes/vendor', 'Vendor', '/api/vendor'),
+  stats: loadRoute('./routes/stats', 'Stats', '/api/stats'),
+  payments: loadRoute('./routes/payments', 'Payments', '/api/payment'), // 🔧 FIXED: Load payments route
+  notifications: loadRoute('./routes/notifications', 'Notifications', '/api/notifications')
+};
 
-try {
-  app.use('/api/bookings', require('./routes/bookings'));
-  console.log('✅ Bookings routes loaded');
-} catch (error) {
-  console.error('❌ Bookings routes failed:', error.message);
-}
-
-try {
-  app.use('/api/vendor', require('./routes/vendor'));
-  console.log('✅ Vendor routes loaded');
-} catch (error) {
-  console.error('❌ Vendor routes failed:', error.message);
-}
-
-try {
-  app.use('/api/stats', require('./routes/stats'));
-  console.log('✅ Stats routes loaded');
-} catch (error) {
-  console.error('❌ Stats routes failed:', error.message);
-}
-
-// 🔧 Try to load notification routes (optional)
-try {
-  app.use('/api/notifications', require('./routes/notifications'));
-  console.log('✅ Notification routes loaded');
-} catch (error) {
-  console.warn('⚠️  Notification routes not available:', error.message);
+// 🆕 Check critical routes
+if (!routesStatus.payments) {
+  console.log('⚠️  Payment routes failed to load - creating fallback endpoints');
+  
+  // Fallback payment endpoints if file is missing or has errors
+  app.get('/api/payment/health', (req, res) => {
+    res.status(500).json({
+      success: false,
+      error: 'Payment routes not properly loaded',
+      message: 'Please check ./routes/payments.js file for errors',
+      razorpay: {
+        key_id: process.env.RAZORPAY_KEY_ID ? "Configured" : "Not configured",
+        key_secret: process.env.RAZORPAY_SECRET ? "Configured" : "Not configured"
+      }
+    });
+  });
+  
+  app.post('/api/payment/create-order', (req, res) => {
+    res.status(500).json({
+      success: false,
+      error: 'Payment system not available',
+      message: 'Please check ./routes/payments.js file and Razorpay configuration'
+    });
+  });
 }
 
 // Root route
@@ -238,9 +236,11 @@ app.get('/', (req, res) => {
     environment: process.env.NODE_ENV || 'development',
     status: 'running',
     timestamp: new Date().toISOString(),
-    cors: {
-      enabled: true,
-      origin: req.headers.origin || 'none'
+    features: {
+      cors: true,
+      socketio: !!io,
+      database: mongoose.connection.readyState === 1,
+      routes: routesStatus
     },
     endpoints: {
       health: '/health',
@@ -248,7 +248,9 @@ app.get('/', (req, res) => {
       gamezones: '/api/gamezones',
       bookings: '/api/bookings',
       stats: '/api/stats',
-      auth: '/api/auth'
+      auth: '/api/auth',
+      payment: '/api/payment',
+      notifications: '/api/notifications'
     }
   });
 });
@@ -262,9 +264,13 @@ app.get('/health', (req, res) => {
     environment: process.env.NODE_ENV || 'development',
     database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
     port: process.env.PORT || 3000,
-    cors: {
-      enabled: true,
-      origin: req.headers.origin || 'none'
+    features: {
+      cors: true,
+      socketio: !!io,
+      routes: routesStatus,
+      razorpay: {
+        configured: !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_SECRET)
+      }
     }
   });
 });
@@ -275,6 +281,7 @@ app.get('/api', (req, res) => {
     message: '🎮 GameZone API Documentation',
     version: '1.0.0',
     environment: process.env.NODE_ENV || 'development',
+    routes_status: routesStatus,
     endpoints: {
       health: 'GET /health',
       auth: {
@@ -293,6 +300,13 @@ app.get('/api', (req, res) => {
         details: 'GET /api/bookings/:id',
         cancel: 'PUT /api/bookings/:id/cancel',
         availability: 'GET /api/bookings/availability/:zoneId/:date'
+      },
+      payments: {
+        health: 'GET /api/payment/health',
+        createOrder: 'POST /api/payment/create-order',
+        verifyPayment: 'POST /api/payment/verify-payment',
+        refund: 'POST /api/payment/refund',
+        testUPI: 'GET /api/payment/test-upi'
       },
       stats: {
         app: 'GET /api/stats/app',
@@ -344,8 +358,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-
-
 // Start notification processor (optional)
 try {
   const NotificationService = require('./services/NotificationService');
@@ -372,16 +384,23 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`📍 Server: http://localhost:${PORT}`);
   console.log(`🏥 Health: http://localhost:${PORT}/health`);
   console.log(`📚 Docs: http://localhost:${PORT}/api`);
+  console.log(`💳 Payment Health: http://localhost:${PORT}/api/payment/health`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📊 Database: ${mongoose.connection.readyState === 1 ? 'Connected' : 'Connecting...'}`);
   console.log(`🔐 CORS: Enabled (permissive in development)`);
   console.log(`📡 Socket.IO: ${io ? 'Enabled' : 'Disabled'}`);
+  console.log(`💳 Payments: ${routesStatus.payments ? 'Enabled' : 'Disabled'}`);
+  console.log(`🔑 Razorpay: ${(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_SECRET) ? 'Configured' : 'Not Configured'}`);
+  console.log(`\n📋 Route Status:`);
+  Object.entries(routesStatus).forEach(([route, loaded]) => {
+    console.log(`   ${loaded ? '✅' : '❌'} ${route}`);
+  });
   console.log(`\n🎮 Ready to serve GameZone requests!\n`);
 });
 
 // Graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('\n🛑 Shutting down gracefully...');
+const gracefulShutdown = async (signal) => {
+  console.log(`\n🛑 ${signal} received, shutting down gracefully...`);
   
   try {
     await mongoose.connection.close();
@@ -394,22 +413,9 @@ process.on('SIGINT', async () => {
     console.log('🚀 HTTP server closed');
     process.exit(0);
   });
-});
+};
 
-process.on('SIGTERM', async () => {
-  console.log('🛑 SIGTERM received, shutting down...');
-  
-  try {
-    await mongoose.connection.close();
-    console.log('📊 Database connection closed');
-  } catch (error) {
-    console.error('❌ Error closing database:', error);
-  }
-  
-  httpServer.close(() => {
-    console.log('🚀 HTTP server closed');
-    process.exit(0);
-  });
-});
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 module.exports = { app, server: httpServer };
