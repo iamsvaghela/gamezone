@@ -267,7 +267,7 @@ bookingSchema.pre('save', async function(next) {
       referenceExists = !!existingBooking;
     }
     
-    this.reference = = reference;
+    this.reference = reference;
   }
   next();
 });
