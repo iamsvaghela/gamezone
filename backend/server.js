@@ -6,7 +6,8 @@ const path = require('path');
 require('dotenv').config();
 
 const app = express();
-
+const BookingCleanupService = require('./services/BookingCleanupService');
+BookingCleanupService.startPeriodicCleanup(15); // Every 15 minutes
 // 🔧 FIXED CORS Configuration - More permissive for development
 const corsOptions = {
   origin: function (origin, callback) {

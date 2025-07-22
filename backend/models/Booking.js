@@ -1,4 +1,4 @@
-// models/Booking.js - Complete Booking Model with all required functionality
+// models/Booking.js - Updated with new payment flow statuses
 const mongoose = require('mongoose');
 
 // Helper function to generate unique booking reference
@@ -48,30 +48,12 @@ const bookingSchema = new mongoose.Schema({
     type: Number,
     required: [true, 'Duration is required'],
     min: [1, 'Duration must be at least 1 hour'],
-    max: [8, 'Duration cannot exceed 8 hours']
+    max: [12, 'Duration cannot exceed 12 hours']
   },
   totalAmount: {
     type: Number,
     required: [true, 'Total amount is required'],
     min: [0, 'Total amount must be positive']
-  },
-  status: {
-    type: String,
-    enum: {
-      values: ['pending', 'confirmed', 'completed', 'cancelled'],
-      message: 'Status must be one of: pending, confirmed, completed, cancelled'
-    },
-    default: 'pending',
-    index: true
-  },
-  paymentStatus: {
-    type: String,
-    enum: {
-      values: ['pending', 'paid', 'refunded', 'failed'],
-      message: 'Payment status must be one of: pending, paid, refunded, failed'
-    },
-    default: 'pending',
-    index: true
   },
   reference: {
     type: String,
@@ -79,6 +61,80 @@ const bookingSchema = new mongoose.Schema({
     default: generateBookingReference,
     index: true
   },
+  // 🆕 Updated status with new payment flow states
+  status: {
+    type: String,
+    enum: {
+      values: [
+        'pending_payment',  // 🆕 Booking created, waiting for payment
+        'confirmed',        // Payment successful, booking confirmed
+        'payment_failed',   // 🆕 Payment failed, booking cancelled
+        'completed',        // Booking session completed
+        'cancelled',        // Booking cancelled by user
+        'no_show'          // User didn't show up
+      ],
+      message: 'Status must be one of: pending_payment, confirmed, payment_failed, completed, cancelled, no_show'
+    },
+    default: 'pending_payment', // 🆕 Default to pending payment
+    index: true
+  },
+  // 🆕 Enhanced payment status tracking
+  paymentStatus: {
+    type: String,
+    enum: {
+      values: [
+        'pending',    // 🆕 Payment not yet attempted
+        'processing', // 🆕 Payment in progress
+        'completed',  // Payment successful
+        'failed',     // Payment failed
+        'refunded'    // Payment refunded
+      ],
+      message: 'Payment status must be one of: pending, processing, completed, failed, refunded'
+    },
+    default: 'pending',
+    index: true
+  },
+  paymentMethod: {
+    type: String,
+    enum: ['upi', 'card', 'netbanking', 'wallet', null],
+    default: null // 🆕 Will be set after payment
+  },
+  // 🆕 Enhanced payment tracking fields
+  paymentId: {
+    type: String,
+    default: null,
+    index: true // For quick lookups
+  },
+  orderId: {
+    type: String,
+    default: null,
+    index: true
+  },
+  paymentVerified: {
+    type: Boolean,
+    default: false
+  },
+  paymentVerifiedAt: {
+    type: Date,
+    default: null
+  },
+  // 🆕 Payment failure tracking
+  paymentFailureReason: {
+    type: String,
+    default: null
+  },
+  paymentFailedAt: {
+    type: Date,
+    default: null
+  },
+  // 🆕 Payment attempt tracking
+  paymentAttempts: [{
+    attemptedAt: { type: Date, default: Date.now },
+    paymentId: String,
+    orderId: String,
+    status: String,
+    errorMessage: String
+  }],
   qrCode: {
     type: String,
     default: null
@@ -93,19 +149,34 @@ const bookingSchema = new mongoose.Schema({
     maxlength: [200, 'Cancellation reason cannot exceed 200 characters'],
     trim: true
   },
+  // 🆕 Enhanced booking lifecycle timestamps
+  createdAt: {
+    type: Date,
+    default: Date.now
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
+  },
+  confirmedAt: {
+    type: Date,
+    default: null
+  },
+  completedAt: {
+    type: Date,
+    default: null
+  },
   cancelledAt: {
     type: Date,
     default: null
   },
-  // Payment tracking
-  paymentMethod: {
-    type: String,
-    enum: ['card', 'cash', 'mobile_payment'],
-    default: 'card'
-  },
-  paymentReference: {
-    type: String,
-    default: null
+  // 🆕 Auto-cancellation for pending payments
+  paymentDeadline: {
+    type: Date,
+    default: function() {
+      // Set deadline to 30 minutes from creation for pending payments
+      return new Date(Date.now() + 30 * 60 * 1000);
+    }
   },
   // Vendor notification status
   vendorNotified: {
@@ -133,13 +204,54 @@ const bookingSchema = new mongoose.Schema({
   }
 }, {
   timestamps: true,
-  // Add compound indexes for better query performance
+  // 🆕 Add indexes for better query performance
   indexes: [
-    { userId: 1, date: -1 },
-    { zoneId: 1, date: 1, timeSlot: 1 },
-    { status: 1, date: 1 },
-    { paymentStatus: 1, createdAt: -1 }
+    { fields: { userId: 1, status: 1 } },
+    { fields: { zoneId: 1, date: 1 } },
+    { fields: { status: 1, paymentDeadline: 1 } }, // For auto-cancellation queries
+    { fields: { paymentId: 1 } },
+    { fields: { reference: 1 } },
+    { fields: { userId: 1, date: -1 } },
+    { fields: { zoneId: 1, date: 1, timeSlot: 1 } },
+    { fields: { paymentStatus: 1, createdAt: -1 } }
   ]
+});
+
+// 🆕 Compound index to prevent double bookings
+bookingSchema.index({ 
+  zoneId: 1, 
+  date: 1, 
+  timeSlot: 1, 
+  status: 1 
+}, { 
+  unique: true, 
+  partialFilterExpression: { 
+    status: { $in: ['pending_payment', 'confirmed'] } 
+  }
+});
+
+// 🆕 Auto-update timestamp on save
+bookingSchema.pre('save', function(next) {
+  this.updatedAt = new Date();
+  
+  // Set confirmed timestamp when status changes to confirmed
+  if (this.isModified('status') && this.status === 'confirmed' && !this.confirmedAt) {
+    this.confirmedAt = new Date();
+  }
+  
+  // Set completed timestamp when status changes to completed
+  if (this.isModified('status') && this.status === 'completed' && !this.completedAt) {
+    this.completedAt = new Date();
+  }
+  
+  // Set cancelled timestamp when status changes to cancelled or payment_failed
+  if (this.isModified('status') && 
+      (this.status === 'cancelled' || this.status === 'payment_failed') && 
+      !this.cancelledAt) {
+    this.cancelledAt = new Date();
+  }
+  
+  next();
 });
 
 // Pre-save middleware to ensure unique booking reference
@@ -155,29 +267,33 @@ bookingSchema.pre('save', async function(next) {
       referenceExists = !!existingBooking;
     }
     
-    this.reference = reference;
+    this.reference = = reference;
   }
   next();
 });
 
-// Method to check if booking can be cancelled
+// 🆕 Method to check if booking can be cancelled
 bookingSchema.methods.canBeCancelled = function() {
-  // Cannot cancel if already cancelled or completed
-  if (this.status === 'cancelled' || this.status === 'completed') {
-    return false;
+  if (!['pending_payment', 'confirmed'].includes(this.status)) {
+    return { canCancel: false, reason: 'Booking is not in a cancellable state' };
   }
   
-  // Create booking date/time
-  const bookingDateTime = new Date(this.date);
-  const [hours, minutes] = this.timeSlot.split(':').map(Number);
-  bookingDateTime.setHours(hours, minutes, 0, 0);
-  
-  // Check if booking is more than 2 hours away
   const now = new Date();
-  const timeDiff = bookingDateTime.getTime() - now.getTime();
-  const hoursDiff = timeDiff / (1000 * 60 * 60);
+  const bookingDateTime = new Date(this.date);
+  const [hours, minutes] = this.timeSlot.split(':');
+  bookingDateTime.setHours(parseInt(hours), parseInt(minutes), 0, 0);
   
-  return hoursDiff > 2;
+  const hoursUntilBooking = (bookingDateTime - now) / (1000 * 60 * 60);
+  
+  if (hoursUntilBooking < 24) {
+    return { 
+      canCancel: false, 
+      reason: 'Cannot cancel booking less than 24 hours before start time',
+      hoursRemaining: Math.round(hoursUntilBooking * 100) / 100
+    };
+  }
+  
+  return { canCancel: true };
 };
 
 // Method to mark booking as checked in
@@ -190,19 +306,33 @@ bookingSchema.methods.checkIn = function() {
 // Method to complete booking
 bookingSchema.methods.complete = function() {
   this.status = 'completed';
+  this.completedAt = new Date();
   return this.save();
 };
 
-// Method to cancel booking
+// 🆕 Updated cancel method
 bookingSchema.methods.cancel = function(reason) {
   this.status = 'cancelled';
   this.cancellationReason = reason;
   this.cancelledAt = new Date();
   
   // Update payment status to refunded if it was paid
-  if (this.paymentStatus === 'paid') {
+  if (this.paymentStatus === 'completed') {
     this.paymentStatus = 'refunded';
   }
+  
+  return this.save();
+};
+
+// 🆕 Instance method to record payment attempt
+bookingSchema.methods.recordPaymentAttempt = function(paymentData) {
+  this.paymentAttempts.push({
+    attemptedAt: new Date(),
+    paymentId: paymentData.paymentId,
+    orderId: paymentData.orderId,
+    status: paymentData.status,
+    errorMessage: paymentData.errorMessage
+  });
   
   return this.save();
 };
@@ -221,7 +351,7 @@ bookingSchema.statics.findConflictingBookings = function(zoneId, date, timeSlot,
       $gte: startOfDay,
       $lte: endOfDay
     },
-    status: { $in: ['pending', 'confirmed'] }
+    status: { $in: ['pending_payment', 'confirmed'] } // 🆕 Updated to include pending_payment
   };
 
   if (excludeId) {
@@ -248,6 +378,36 @@ bookingSchema.statics.isTimeSlotAvailable = async function(zoneId, date, timeSlo
   return !hasConflict;
 };
 
+// 🆕 Static method to find expired pending payments
+bookingSchema.statics.findExpiredPendingPayments = function() {
+  return this.find({
+    status: 'pending_payment',
+    paymentDeadline: { $lt: new Date() }
+  });
+};
+
+// 🆕 Static method to auto-cancel expired bookings
+bookingSchema.statics.cancelExpiredBookings = async function() {
+  const expiredBookings = await this.findExpiredPendingPayments();
+  
+  const results = [];
+  for (const booking of expiredBookings) {
+    booking.status = 'payment_failed';
+    booking.paymentStatus = 'failed';
+    booking.paymentFailureReason = 'Payment deadline exceeded';
+    booking.paymentFailedAt = new Date();
+    
+    await booking.save();
+    results.push({
+      bookingId: booking._id,
+      reference: booking.reference,
+      reason: 'Payment deadline exceeded'
+    });
+  }
+  
+  return results;
+};
+
 // Static method to get user's booking statistics
 bookingSchema.statics.getUserStats = function(userId) {
   return this.aggregate([
@@ -261,8 +421,6 @@ bookingSchema.statics.getUserStats = function(userId) {
     }
   ]);
 };
-
-
 
 // Static method to get zone's booking statistics
 bookingSchema.statics.getZoneStats = function(zoneId) {
@@ -281,6 +439,31 @@ bookingSchema.statics.getZoneStats = function(zoneId) {
     }
   ]);
 };
+
+// 🆕 Virtual for formatted time display
+bookingSchema.virtual('formattedTimeSlot').get(function() {
+  if (!this.timeSlot) return '';
+  
+  const [hours, minutes] = this.timeSlot.split(':');
+  const hour = parseInt(hours);
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${minutes} ${ampm}`;
+});
+
+// 🆕 Virtual for booking end time
+bookingSchema.virtual('endTime').get(function() {
+  if (!this.timeSlot || !this.duration) return '';
+  
+  const [hours, minutes] = this.timeSlot.split(':');
+  const startMinutes = parseInt(hours) * 60 + parseInt(minutes);
+  const endMinutes = startMinutes + (this.duration * 60);
+  
+  const endHours = Math.floor(endMinutes / 60) % 24;
+  const mins = endMinutes % 60;
+  
+  return `${endHours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+});
 
 // Virtual for formatted date
 bookingSchema.virtual('formattedDate').get(function() {
@@ -301,22 +484,56 @@ bookingSchema.virtual('formattedTime').get(function() {
   return `${displayHour}:${minutes} ${ampm}`;
 });
 
-// Virtual for end time
-bookingSchema.virtual('endTime').get(function() {
-  const [hours, minutes] = this.timeSlot.split(':').map(Number);
-  const startMinutes = hours * 60 + minutes;
-  const endMinutes = startMinutes + (this.duration * 60);
-  const endHours = Math.floor(endMinutes / 60) % 24;
-  const endMins = endMinutes % 60;
-  return `${endHours.toString().padStart(2, '0')}:${endMins.toString().padStart(2, '0')}`;
-});
-
 // Virtual for booking duration in minutes
 bookingSchema.virtual('durationInMinutes').get(function() {
   return this.duration * 60;
 });
 
-// Transform output to include virtuals
+// 🆕 Virtual for payment status display
+bookingSchema.virtual('paymentStatusDisplay').get(function() {
+  const statusMap = {
+    'pending': 'Payment Required',
+    'processing': 'Processing Payment...',
+    'completed': 'Payment Completed',
+    'failed': 'Payment Failed',
+    'refunded': 'Payment Refunded'
+  };
+  
+  return statusMap[this.paymentStatus] || this.paymentStatus;
+});
+
+// 🆕 Virtual for overall booking status display
+bookingSchema.virtual('statusDisplay').get(function() {
+  const statusMap = {
+    'pending_payment': 'Awaiting Payment',
+    'confirmed': 'Confirmed',
+    'payment_failed': 'Payment Failed',
+    'completed': 'Completed',
+    'cancelled': 'Cancelled',
+    'no_show': 'No Show'
+  };
+  
+  return statusMap[this.status] || this.status;
+});
+
+// 🆕 Virtual to check if booking is active (can be used)
+bookingSchema.virtual('isActive').get(function() {
+  return ['confirmed'].includes(this.status);
+});
+
+// 🆕 Virtual to check if payment is required
+bookingSchema.virtual('requiresPayment').get(function() {
+  return this.status === 'pending_payment' && this.paymentStatus === 'pending';
+});
+
+// 🆕 Virtual to check if booking is expired (past payment deadline)
+bookingSchema.virtual('isExpired').get(function() {
+  return this.status === 'pending_payment' && 
+         this.paymentDeadline && 
+         new Date() > this.paymentDeadline;
+});
+
+// Ensure virtuals are included when converting to JSON
 bookingSchema.set('toJSON', { 
   virtuals: true,
   transform: function(doc, ret) {
@@ -332,7 +549,5 @@ bookingSchema.index({
   reference: 'text', 
   notes: 'text' 
 });
-
-
 
 module.exports = mongoose.model('Booking', bookingSchema);

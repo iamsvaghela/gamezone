@@ -1,170 +1,420 @@
-// backend/routes/payments.js - Complete Razorpay integration with verification
-const express = require("express");
-const Razorpay = require("razorpay");
-const crypto = require("crypto");
+// routes/payment.js - Razorpay payment integration
+const express = require('express');
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
+const { auth, userOnly } = require('../middleware/auth');
+const Booking = require('../models/Booking');
 const router = express.Router();
 
-// Initialize Razorpay with your credentials
+// Initialize Razorpay
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_SECRET,
+  key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_2hfLaJ5xnMdUTJ',
+  key_secret: process.env.RAZORPAY_KEY_SECRET || 'your_razorpay_key_secret'
 });
 
-// 🆕 Create Order endpoint
-router.post("/create-order", async (req, res) => {
-  console.log("🔄 Creating Razorpay order...");
-  
+// POST /api/payment/create-order - Create Razorpay order
+router.post('/create-order', auth, userOnly, async (req, res) => {
   try {
-    const { amount, currency = "INR" } = req.body;
-
+    const { amount, bookingId, currency = 'INR' } = req.body;
+    
+    console.log('💳 Creating Razorpay order:', { amount, bookingId, currency });
+    
     // Validate amount
     if (!amount || amount <= 0) {
       return res.status(400).json({
         success: false,
-        error: "Amount is required and must be greater than 0",
+        error: 'Valid amount is required'
       });
     }
-
-    console.log(`💰 Order amount: ₹${amount} (${amount * 100} paise)`);
-
-    const options = {
-      amount: Math.round(amount * 100), // Convert to paise and ensure integer
+    
+    // Convert amount to paise (multiply by 100)
+    const amountInPaise = Math.round(amount * 100);
+    
+    // Validate booking exists and belongs to user (optional)
+    if (bookingId) {
+      const booking = await Booking.findOne({
+        _id: bookingId,
+        userId: req.user.userId,
+        status: 'pending_payment'
+      });
+      
+      if (!booking) {
+        return res.status(404).json({
+          success: false,
+          error: 'Booking not found or not eligible for payment'
+        });
+      }
+      
+      // Verify amount matches booking amount
+      const bookingAmountInPaise = Math.round(booking.totalAmount * 100);
+      if (amountInPaise !== bookingAmountInPaise) {
+        return res.status(400).json({
+          success: false,
+          error: 'Amount mismatch with booking total',
+          expected: booking.totalAmount,
+          received: amount
+        });
+      }
+    }
+    
+    // Create Razorpay order
+    const orderOptions = {
+      amount: amountInPaise,
       currency: currency,
-      payment_capture: 1, // Auto capture payment
+      receipt: `rcpt_${bookingId || Date.now()}`,
       notes: {
-        description: "GameZone Booking Payment",
-        created_at: new Date().toISOString(),
-      },
+        bookingId: bookingId || '',
+        userId: req.user.userId,
+        orderType: 'gaming_zone_booking',
+        createdAt: new Date().toISOString()
+      }
     };
-
-    const order = await razorpay.orders.create(options);
-    console.log("✅ Razorpay order created:", order.id);
-
+    
+    console.log('📦 Creating order with options:', orderOptions);
+    
+    const order = await razorpay.orders.create(orderOptions);
+    
+    console.log('✅ Razorpay order created:', order.id);
+    
+    // Log order creation for tracking
+    if (bookingId) {
+      await Booking.findByIdAndUpdate(bookingId, {
+        $push: {
+          paymentAttempts: {
+            attemptedAt: new Date(),
+            orderId: order.id,
+            status: 'order_created',
+            paymentId: null,
+            errorMessage: null
+          }
+        }
+      });
+    }
+    
     res.json({
       success: true,
       order: {
         id: order.id,
         amount: order.amount,
         currency: order.currency,
+        receipt: order.receipt,
         status: order.status,
-        created_at: order.created_at,
+        created_at: order.created_at
       },
-      key_id: process.env.RAZORPAY_KEY_ID, // Safe to expose key_id
+      key: process.env.RAZORPAY_KEY_ID || 'rzp_test_2hfLaJ5xnMdUTJ'
     });
-
+    
   } catch (error) {
-    console.error("❌ Create order error:", error);
+    console.error('❌ Error creating Razorpay order:', error);
+    
+    // Handle Razorpay specific errors
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: 'Payment gateway error',
+        message: error.error?.description || error.message,
+        code: error.error?.code || 'RAZORPAY_ERROR'
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      error: error.message || "Failed to create payment order",
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: 'Failed to create payment order',
+      message: error.message
     });
   }
 });
 
-// 🆕 Verify Payment endpoint
-router.post("/verify-payment", async (req, res) => {
-  console.log("🔄 Verifying Razorpay payment...");
-  
+// POST /api/payment/verify - Verify payment signature
+router.post('/verify', auth, userOnly, async (req, res) => {
   try {
     const {
       razorpay_order_id,
       razorpay_payment_id,
-      razorpay_signature
+      razorpay_signature,
+      bookingId
     } = req.body;
-
+    
+    console.log('🔐 Verifying payment signature:', {
+      orderId: razorpay_order_id,
+      paymentId: razorpay_payment_id,
+      bookingId
+    });
+    
     // Validate required fields
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({
         success: false,
-        error: "Missing required payment verification data"
+        error: 'Missing required payment verification fields'
       });
     }
-
-    console.log("🔐 Verifying signature...");
-    console.log("Order ID:", razorpay_order_id);
-    console.log("Payment ID:", razorpay_payment_id);
-
-    // Create signature verification string
-    const body = razorpay_order_id + "|" + razorpay_payment_id;
-
-    // Generate expected signature
+    
+    // Create signature for verification
     const expectedSignature = crypto
-      .createHmac("sha256", process.env.RAZORPAY_SECRET)
-      .update(body.toString())
-      .digest("hex");
-
-    console.log("Expected signature:", expectedSignature.substring(0, 10) + "...");
-    console.log("Received signature:", razorpay_signature.substring(0, 10) + "...");
-
-    // Verify signature
-    const isAuthentic = expectedSignature === razorpay_signature;
-
-    if (isAuthentic) {
-      console.log("✅ Payment signature verified successfully");
-
-      // Optional: Fetch payment details from Razorpay to get more info
-      try {
-        const payment = await razorpay.payments.fetch(razorpay_payment_id);
-        console.log("💳 Payment details:", {
-          id: payment.id,
-          amount: payment.amount,
-          status: payment.status,
-          method: payment.method,
-          captured: payment.captured
-        });
-
-        res.json({
-          success: true,
-          verified: true,
-          payment: {
-            id: payment.id,
-            amount: payment.amount / 100, // Convert back to rupees
-            status: payment.status,
-            method: payment.method,
-            captured: payment.captured,
-            created_at: payment.created_at
-          }
-        });
-
-      } catch (fetchError) {
-        console.warn("⚠️  Could not fetch payment details:", fetchError.message);
-        // Still return success since signature is verified
-        res.json({
-          success: true,
-          verified: true,
-          payment: {
-            id: razorpay_payment_id,
-            order_id: razorpay_order_id
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || 'your_razorpay_key_secret')
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+    
+    const isSignatureValid = expectedSignature === razorpay_signature;
+    
+    console.log('🔒 Signature verification:', {
+      expected: expectedSignature,
+      received: razorpay_signature,
+      isValid: isSignatureValid
+    });
+    
+    if (!isSignatureValid) {
+      console.log('❌ Invalid payment signature');
+      
+      // Log failed verification attempt
+      if (bookingId) {
+        await Booking.findByIdAndUpdate(bookingId, {
+          $push: {
+            paymentAttempts: {
+              attemptedAt: new Date(),
+              orderId: razorpay_order_id,
+              paymentId: razorpay_payment_id,
+              status: 'signature_verification_failed',
+              errorMessage: 'Invalid payment signature'
+            }
           }
         });
       }
-
-    } else {
-      console.log("❌ Payment signature verification failed");
-      res.status(400).json({
+      
+      return res.status(400).json({
         success: false,
-        error: "Invalid payment signature",
+        error: 'Invalid payment signature',
         verified: false
       });
     }
-
+    
+    console.log('✅ Payment signature verified successfully');
+    
+    // Fetch payment details from Razorpay
+    let paymentDetails = null;
+    try {
+      paymentDetails = await razorpay.payments.fetch(razorpay_payment_id);
+      console.log('📋 Payment details fetched:', {
+        id: paymentDetails.id,
+        status: paymentDetails.status,
+        method: paymentDetails.method,
+        amount: paymentDetails.amount
+      });
+    } catch (fetchError) {
+      console.error('⚠️ Could not fetch payment details:', fetchError);
+      // Continue without payment details - verification is still valid
+    }
+    
+    // Update booking if bookingId is provided
+    if (bookingId) {
+      try {
+        const booking = await Booking.findOne({
+          _id: bookingId,
+          userId: req.user.userId
+        });
+        
+        if (booking) {
+          // Record successful verification
+          booking.paymentAttempts.push({
+            attemptedAt: new Date(),
+            orderId: razorpay_order_id,
+            paymentId: razorpay_payment_id,
+            status: 'signature_verified',
+            errorMessage: null
+          });
+          
+          await booking.save();
+          console.log('✅ Payment verification recorded for booking:', bookingId);
+        }
+      } catch (bookingUpdateError) {
+        console.error('⚠️ Could not update booking with verification:', bookingUpdateError);
+        // Don't fail the verification for booking update errors
+      }
+    }
+    
+    res.json({
+      success: true,
+      verified: true,
+      message: 'Payment verified successfully',
+      paymentDetails: paymentDetails ? {
+        id: paymentDetails.id,
+        status: paymentDetails.status,
+        method: paymentDetails.method,
+        amount: paymentDetails.amount,
+        currency: paymentDetails.currency,
+        captured: paymentDetails.captured,
+        created_at: paymentDetails.created_at
+      } : null
+    });
+    
   } catch (error) {
-    console.error("❌ Payment verification error:", error);
+    console.error('❌ Error verifying payment:', error);
+    
     res.status(500).json({
       success: false,
-      error: error.message || "Payment verification failed",
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: 'Payment verification failed',
+      message: error.message,
+      verified: false
     });
   }
 });
 
-// 🆕 Fetch Payment Details endpoint (optional)
-router.get("/payment/:paymentId", async (req, res) => {
+// POST /api/payment/capture - Manually capture payment (if needed)
+router.post('/capture', auth, userOnly, async (req, res) => {
+  try {
+    const { razorpay_payment_id, amount } = req.body;
+    
+    console.log('💰 Capturing payment:', { paymentId: razorpay_payment_id, amount });
+    
+    if (!razorpay_payment_id || !amount) {
+      return res.status(400).json({
+        success: false,
+        error: 'Payment ID and amount are required'
+      });
+    }
+    
+    const amountInPaise = Math.round(amount * 100);
+    
+    const capturedPayment = await razorpay.payments.capture(
+      razorpay_payment_id,
+      amountInPaise
+    );
+    
+    console.log('✅ Payment captured:', capturedPayment.id);
+    
+    res.json({
+      success: true,
+      message: 'Payment captured successfully',
+      payment: {
+        id: capturedPayment.id,
+        status: capturedPayment.status,
+        amount: capturedPayment.amount,
+        captured: capturedPayment.captured
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error capturing payment:', error);
+    
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: 'Payment capture failed',
+        message: error.error?.description || error.message
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: 'Payment capture failed',
+      message: error.message
+    });
+  }
+});
+
+// POST /api/payment/refund - Process refund
+router.post('/refund', auth, userOnly, async (req, res) => {
+  try {
+    const { razorpay_payment_id, amount, reason, bookingId } = req.body;
+    
+    console.log('💸 Processing refund:', {
+      paymentId: razorpay_payment_id,
+      amount,
+      reason,
+      bookingId
+    });
+    
+    if (!razorpay_payment_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Payment ID is required'
+      });
+    }
+    
+    // Verify booking ownership if bookingId is provided
+    if (bookingId) {
+      const booking = await Booking.findOne({
+        _id: bookingId,
+        userId: req.user.userId
+      });
+      
+      if (!booking || booking.paymentId !== razorpay_payment_id) {
+        return res.status(403).json({
+          success: false,
+          error: 'Unauthorized refund request'
+        });
+      }
+    }
+    
+    const refundData = {
+      notes: {
+        reason: reason || 'Booking cancellation',
+        bookingId: bookingId || '',
+        userId: req.user.userId,
+        refundedAt: new Date().toISOString()
+      }
+    };
+    
+    if (amount) {
+      refundData.amount = Math.round(amount * 100); // Convert to paise
+    }
+    
+    const refund = await razorpay.payments.refund(razorpay_payment_id, refundData);
+    
+    console.log('✅ Refund processed:', refund.id);
+    
+    // Update booking status if bookingId is provided
+    if (bookingId) {
+      await Booking.findByIdAndUpdate(bookingId, {
+        paymentStatus: 'refunded',
+        $push: {
+          paymentAttempts: {
+            attemptedAt: new Date(),
+            paymentId: razorpay_payment_id,
+            status: 'refunded',
+            errorMessage: null
+          }
+        }
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Refund processed successfully',
+      refund: {
+        id: refund.id,
+        status: refund.status,
+        amount: refund.amount,
+        currency: refund.currency,
+        created_at: refund.created_at
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error processing refund:', error);
+    
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: 'Refund failed',
+        message: error.error?.description || error.message
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: 'Refund processing failed',
+      message: error.message
+    });
+  }
+});
+
+// GET /api/payment/status/:paymentId - Get payment status
+router.get('/status/:paymentId', auth, userOnly, async (req, res) => {
   try {
     const { paymentId } = req.params;
     
-    console.log("🔍 Fetching payment details:", paymentId);
+    console.log('📊 Getting payment status:', paymentId);
     
     const payment = await razorpay.payments.fetch(paymentId);
     
@@ -172,108 +422,72 @@ router.get("/payment/:paymentId", async (req, res) => {
       success: true,
       payment: {
         id: payment.id,
-        amount: payment.amount / 100, // Convert to rupees
-        currency: payment.currency,
         status: payment.status,
         method: payment.method,
+        amount: payment.amount,
+        currency: payment.currency,
         captured: payment.captured,
-        description: payment.description,
-        created_at: payment.created_at,
-        fee: payment.fee ? payment.fee / 100 : 0,
-        tax: payment.tax ? payment.tax / 100 : 0
+        refund_status: payment.refund_status,
+        created_at: payment.created_at
       }
     });
-
+    
   } catch (error) {
-    console.error("❌ Fetch payment error:", error);
+    console.error('❌ Error getting payment status:', error);
+    
+    if (error.statusCode === 404) {
+      return res.status(404).json({
+        success: false,
+        error: 'Payment not found'
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      error: error.message || "Failed to fetch payment details"
+      error: 'Failed to get payment status',
+      message: error.message
     });
   }
 });
 
-// 🆕 Refund Payment endpoint (for cancellations)
-router.post("/refund", async (req, res) => {
+// GET /api/payment/orders/:orderId - Get order details
+router.get('/orders/:orderId', auth, userOnly, async (req, res) => {
   try {
-    const { paymentId, amount, notes } = req.body;
+    const { orderId } = req.params;
     
-    if (!paymentId) {
-      return res.status(400).json({
-        success: false,
-        error: "Payment ID is required for refund"
-      });
-    }
-
-    console.log(`🔄 Processing refund for payment: ${paymentId}`);
+    console.log('📦 Getting order details:', orderId);
     
-    const refundOptions = {
-      notes: {
-        reason: notes || "GameZone booking cancellation",
-        processed_at: new Date().toISOString()
-      }
-    };
-
-    // If partial refund amount is specified
-    if (amount) {
-      refundOptions.amount = Math.round(amount * 100); // Convert to paise
-    }
-
-    const refund = await razorpay.payments.refund(paymentId, refundOptions);
-    
-    console.log("✅ Refund processed:", refund.id);
+    const order = await razorpay.orders.fetch(orderId);
     
     res.json({
       success: true,
-      refund: {
-        id: refund.id,
-        amount: refund.amount / 100, // Convert back to rupees
-        status: refund.status,
-        created_at: refund.created_at
+      order: {
+        id: order.id,
+        status: order.status,
+        amount: order.amount,
+        currency: order.currency,
+        receipt: order.receipt,
+        created_at: order.created_at,
+        notes: order.notes
       }
     });
-
+    
   } catch (error) {
-    console.error("❌ Refund error:", error);
+    console.error('❌ Error getting order details:', error);
+    
+    if (error.statusCode === 404) {
+      return res.status(404).json({
+        success: false,
+        error: 'Order not found'
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      error: error.message || "Refund processing failed"
+      error: 'Failed to get order details',
+      message: error.message
     });
   }
-});
-
-// 🆕 Health check for payment service
-router.get("/health", (req, res) => {
-  res.json({
-    success: true,
-    message: "Payment service is running",
-    razorpay: {
-      key_id: process.env.RAZORPAY_KEY_ID ? "Configured" : "Not configured",
-      key_secret: process.env.RAZORPAY_SECRET ? "Configured" : "Not configured"
-    },
-    timestamp: new Date().toISOString()
-  });
-});
-
-// 🆕 Test UPI IDs for development
-router.get("/test-upi", (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({
-      success: false,
-      error: "Test endpoints not available in production"
-    });
-  }
-
-  res.json({
-    success: true,
-    message: "Test UPI IDs for Razorpay sandbox",
-    test_upi_ids: {
-      success: "success@razorpay",
-      failure: "fail@razorpay",
-      pending: "pending@razorpay"
-    },
-    note: "Use these UPI IDs in test mode for different payment scenarios"
-  });
 });
 
 module.exports = router;
