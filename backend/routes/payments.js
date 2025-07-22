@@ -12,85 +12,81 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET || 'your_razorpay_key_secret'
 });
 
+
+
+router.get('/debug-razorpay', (req, res) => {
+  const razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_SECRET
+  });
+
+  res.json({
+    success: true,
+    config: {
+      key_id_present: !!process.env.RAZORPAY_KEY_ID,
+      key_id_length: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.length : 0,
+      key_id_starts_with: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.substring(0, 8) + '...' : 'Not set',
+      key_secret_present: !!process.env.RAZORPAY_SECRET,
+      key_secret_length: process.env.RAZORPAY_SECRET ? process.env.RAZORPAY_SECRET.length : 0,
+      environment: process.env.NODE_ENV,
+      razorpay_instance: !!razorpay
+    }
+  });
+});
 // POST /api/payment/create-order - Create Razorpay order
-router.post('/create-order', auth, userOnly, async (req, res) => {
+router.post('/create-order', async (req, res) => {
   try {
-    const { amount, bookingId, currency = 'INR' } = req.body;
+    console.log('🔄 Creating Razorpay order...');
     
-    console.log('💳 Creating Razorpay order:', { amount, bookingId, currency });
+    // Check if credentials are present
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_SECRET) {
+      console.error('❌ Razorpay credentials missing');
+      return res.status(500).json({
+        success: false,
+        error: 'Payment system configuration error',
+        message: 'Razorpay credentials not configured'
+      });
+    }
+
+    console.log('🔑 Razorpay Key ID:', process.env.RAZORPAY_KEY_ID?.substring(0, 8) + '...');
+    console.log('🔑 Secret length:', process.env.RAZORPAY_SECRET?.length);
+
+    const { amount, bookingId } = req.body;
     
-    // Validate amount
     if (!amount || amount <= 0) {
       return res.status(400).json({
         success: false,
-        error: 'Valid amount is required'
+        error: 'Invalid amount'
       });
     }
-    
+
     // Convert amount to paise (multiply by 100)
     const amountInPaise = Math.round(amount * 100);
     
-    // Validate booking exists and belongs to user (optional)
-    if (bookingId) {
-      const booking = await Booking.findOne({
-        _id: bookingId,
-        userId: req.user.userId,
-        status: 'pending_payment'
-      });
-      
-      if (!booking) {
-        return res.status(404).json({
-          success: false,
-          error: 'Booking not found or not eligible for payment'
-        });
-      }
-      
-      // Verify amount matches booking amount
-      const bookingAmountInPaise = Math.round(booking.totalAmount * 100);
-      if (amountInPaise !== bookingAmountInPaise) {
-        return res.status(400).json({
-          success: false,
-          error: 'Amount mismatch with booking total',
-          expected: booking.totalAmount,
-          received: amount
-        });
-      }
-    }
-    
-    // Create Razorpay order
-    const orderOptions = {
+    console.log('💰 Order amount: ₹' + amount + ' (' + amountInPaise + ' paise)');
+
+    const options = {
       amount: amountInPaise,
-      currency: currency,
-      receipt: `rcpt_${bookingId || Date.now()}`,
+      currency: 'INR',
+      receipt: `rcpt_${Date.now()}`,
       notes: {
         bookingId: bookingId || '',
-        userId: req.user.userId,
+        userId: req.user?.userId || '',
         orderType: 'gaming_zone_booking',
         createdAt: new Date().toISOString()
       }
     };
-    
-    console.log('📦 Creating order with options:', orderOptions);
-    
-    const order = await razorpay.orders.create(orderOptions);
-    
+
+    console.log('📦 Creating order with options:', JSON.stringify(options, null, 2));
+
+    const razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_SECRET
+    });
+
+    const order = await razorpay.orders.create(options);
     console.log('✅ Razorpay order created:', order.id);
-    
-    // Log order creation for tracking
-    if (bookingId) {
-      await Booking.findByIdAndUpdate(bookingId, {
-        $push: {
-          paymentAttempts: {
-            attemptedAt: new Date(),
-            orderId: order.id,
-            status: 'order_created',
-            paymentId: null,
-            errorMessage: null
-          }
-        }
-      });
-    }
-    
+
     res.json({
       success: true,
       order: {
@@ -99,28 +95,36 @@ router.post('/create-order', auth, userOnly, async (req, res) => {
         currency: order.currency,
         receipt: order.receipt,
         status: order.status,
-        created_at: order.created_at
-      },
-      key: process.env.RAZORPAY_KEY_ID || 'rzp_test_2hfLaJ5xnMdUTJ'
+        created_at: order.created_at,
+        notes: order.notes
+      }
     });
-    
+
   } catch (error) {
-    console.error('❌ Error creating Razorpay order:', error);
+    console.error('❌ Razorpay order creation failed:', error);
     
-    // Handle Razorpay specific errors
-    if (error.statusCode) {
-      return res.status(error.statusCode).json({
-        success: false,
-        error: 'Payment gateway error',
-        message: error.error?.description || error.message,
-        code: error.error?.code || 'RAZORPAY_ERROR'
-      });
+    let errorMessage = 'Failed to create payment order';
+    let errorCode = 'RAZORPAY_ERROR';
+    
+    if (error.error && error.error.code) {
+      errorCode = error.error.code;
+      errorMessage = error.error.description || error.message;
     }
     
+    // Specific handling for authentication errors
+    if (errorCode === 'BAD_REQUEST_ERROR' && errorMessage.includes('authentication')) {
+      errorMessage = 'Invalid Razorpay credentials. Please check your API keys.';
+    }
+
     res.status(500).json({
       success: false,
-      error: 'Failed to create payment order',
-      message: error.message
+      error: 'Payment gateway error',
+      message: errorMessage,
+      code: errorCode,
+      details: process.env.NODE_ENV === 'development' ? {
+        originalError: error.message,
+        stack: error.stack
+      } : undefined
     });
   }
 });
