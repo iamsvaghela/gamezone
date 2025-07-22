@@ -94,7 +94,7 @@
             name: user.name,
             role: user.role
           };
-        }
+        } 
       }
       
       next();

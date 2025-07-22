@@ -643,7 +643,7 @@ router.get('/analytics', async (req, res) => {
       }
     ]);
     
-    res.json({
+    res.json({    
       success: true,
       analytics: {
         period,
