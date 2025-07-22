@@ -211,7 +211,7 @@ if (!routesStatus.payments) {
     res.status(500).json({
       success: false,
       error: 'Payment routes not properly loaded',
-      message: 'Please check ./routes/payments.js file for errors',
+      message: 'Please check ./routes/payment.js file for errors',
       razorpay: {
         key_id: process.env.RAZORPAY_KEY_ID ? "Configured" : "Not configured",
         key_secret: process.env.RAZORPAY_SECRET ? "Configured" : "Not configured"
@@ -223,7 +223,7 @@ if (!routesStatus.payments) {
     res.status(500).json({
       success: false,
       error: 'Payment system not available',
-      message: 'Please check ./routes/payments.js file and Razorpay configuration'
+      message: 'Please check ./routes/payment.js file and Razorpay configuration'
     });
   });
 }
