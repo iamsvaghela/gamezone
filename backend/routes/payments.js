@@ -1,4 +1,4 @@
-// routes/payment.js - Razorpay payment integration
+// routes/payment.js - Fixed Razorpay payment integration
 const express = require('express');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
@@ -6,51 +6,46 @@ const { auth, userOnly } = require('../middleware/auth');
 const Booking = require('../models/Booking');
 const router = express.Router();
 
-// Initialize Razorpay
+// 🔧 FIXED: Consistent environment variable usage
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
+
+// Validate credentials on startup
+if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+  console.error('❌ CRITICAL: Razorpay credentials missing!');
+  console.error('Required env vars: RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET');
+  process.exit(1);
+}
+
+// Initialize Razorpay with consistent credentials
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_2hfLaJ5xnMdUTJ',
-  key_secret: process.env.RAZORPAY_KEY_SECRET || 'your_razorpay_key_secret'
+  key_id: RAZORPAY_KEY_ID,
+  key_secret: RAZORPAY_KEY_SECRET
 });
 
+console.log('✅ Razorpay initialized with Key ID:', RAZORPAY_KEY_ID?.substring(0, 8) + '...');
 
-
+// Debug endpoint to check credentials
 router.get('/debug-razorpay', (req, res) => {
-  const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_SECRET
-  });
-
   res.json({
     success: true,
     config: {
-      key_id_present: !!process.env.RAZORPAY_KEY_ID,
-      key_id_length: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.length : 0,
-      key_id_starts_with: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.substring(0, 8) + '...' : 'Not set',
-      key_secret_present: !!process.env.RAZORPAY_SECRET,
-      key_secret_length: process.env.RAZORPAY_SECRET ? process.env.RAZORPAY_SECRET.length : 0,
+      key_id_present: !!RAZORPAY_KEY_ID,
+      key_id_length: RAZORPAY_KEY_ID ? RAZORPAY_KEY_ID.length : 0,
+      key_id_starts_with: RAZORPAY_KEY_ID ? RAZORPAY_KEY_ID.substring(0, 8) + '...' : 'Not set',
+      key_secret_present: !!RAZORPAY_KEY_SECRET,
+      key_secret_length: RAZORPAY_KEY_SECRET ? RAZORPAY_KEY_SECRET.length : 0,
       environment: process.env.NODE_ENV,
       razorpay_instance: !!razorpay
     }
   });
 });
+
 // POST /api/payment/create-order - Create Razorpay order
-router.post('/create-order', async (req, res) => {
+router.post('/create-order', auth, userOnly, async (req, res) => {
   try {
     console.log('🔄 Creating Razorpay order...');
     
-    // Check if credentials are present
-    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_SECRET) {
-      console.error('❌ Razorpay credentials missing');
-      return res.status(500).json({
-        success: false,
-        error: 'Payment system configuration error',
-        message: 'Razorpay credentials not configured'
-      });
-    }
-
-    console.log('🔑 Razorpay Key ID:', process.env.RAZORPAY_KEY_ID?.substring(0, 8) + '...');
-    console.log('🔑 Secret length:', process.env.RAZORPAY_SECRET?.length);
-
     const { amount, bookingId } = req.body;
     
     if (!amount || amount <= 0) {
@@ -78,11 +73,6 @@ router.post('/create-order', async (req, res) => {
     };
 
     console.log('📦 Creating order with options:', JSON.stringify(options, null, 2));
-
-    const razorpay = new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_SECRET
-    });
 
     const order = await razorpay.orders.create(options);
     console.log('✅ Razorpay order created:', order.id);
@@ -153,9 +143,9 @@ router.post('/verify', auth, userOnly, async (req, res) => {
       });
     }
     
-    // Create signature for verification
+    // 🔧 FIXED: Use consistent key secret
     const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_SECRET || 'your_razorpay_key_secret')
+      .createHmac('sha256', RAZORPAY_KEY_SECRET)
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest('hex');
     
