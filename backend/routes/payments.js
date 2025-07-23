@@ -253,6 +253,84 @@ router.post('/verify', auth, userOnly, async (req, res) => {
   }
 });
 
+
+
+router.get('/test-credentials', async (req, res) => {
+  try {
+    console.log('🧪 Testing Razorpay credentials...');
+    
+    // Test 1: Check if credentials are loaded
+    const credentialsCheck = {
+      key_id_present: !!RAZORPAY_KEY_ID,
+      key_id_value: RAZORPAY_KEY_ID,
+      key_secret_present: !!RAZORPAY_KEY_SECRET,
+      key_secret_length: RAZORPAY_KEY_SECRET ? RAZORPAY_KEY_SECRET.length : 0
+    };
+    
+    console.log('🔑 Credentials check:', credentialsCheck);
+    
+    // Test 2: Try to create a test order
+    const testOrder = await razorpay.orders.create({
+      amount: 100, // ₹1 in paise
+      currency: 'INR',
+      receipt: `test_${Date.now()}`,
+      notes: {
+        test: 'credential_verification'
+      }
+    });
+    
+    console.log('✅ Test order created successfully:', testOrder.id);
+    
+    // Test 3: Try to fetch the order back
+    const fetchedOrder = await razorpay.orders.fetch(testOrder.id);
+    console.log('✅ Test order fetched successfully:', fetchedOrder.id);
+    
+    res.json({
+      success: true,
+      message: 'Razorpay credentials are working correctly',
+      credentials: {
+        key_id_present: credentialsCheck.key_id_present,
+        key_id_starts_with: RAZORPAY_KEY_ID ? RAZORPAY_KEY_ID.substring(0, 8) + '...' : 'Not set',
+        key_secret_present: credentialsCheck.key_secret_present,
+        key_secret_length: credentialsCheck.key_secret_length
+      },
+      testOrder: {
+        id: testOrder.id,
+        amount: testOrder.amount,
+        currency: testOrder.currency,
+        status: testOrder.status
+      },
+      fetchTest: {
+        success: true,
+        orderId: fetchedOrder.id
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Razorpay credentials test failed:', error);
+    
+    let errorDetails = {
+      message: error.message,
+      code: error.error?.code || 'UNKNOWN_ERROR'
+    };
+    
+    if (error.error?.code === 'BAD_REQUEST_ERROR' && error.error?.description?.includes('authentication')) {
+      errorDetails.likely_cause = 'Invalid API keys - check RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET';
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: 'Razorpay credentials test failed',
+      details: errorDetails,
+      credentials: {
+        key_id_present: !!RAZORPAY_KEY_ID,
+        key_id_starts_with: RAZORPAY_KEY_ID ? RAZORPAY_KEY_ID.substring(0, 8) + '...' : 'Not set',
+        key_secret_present: !!RAZORPAY_KEY_SECRET,
+        key_secret_length: RAZORPAY_KEY_SECRET ? RAZORPAY_KEY_SECRET.length : 0
+      }
+    });
+  }
+});
 // POST /api/payment/capture - Manually capture payment (if needed)
 router.post('/capture', auth, userOnly, async (req, res) => {
   try {
