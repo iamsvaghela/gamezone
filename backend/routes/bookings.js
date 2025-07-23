@@ -562,8 +562,30 @@ router.post('/', auth, userOnly, async (req, res) => {
   }
 });
 
+// 🔧 TEST ROUTES - Remove these after debugging
+router.all('/test-routes', (req, res) => {
+  console.log('🔧 Test route hit:', req.method, req.originalUrl);
+  res.json({
+    success: true,
+    message: 'Booking routes are working',
+    method: req.method,
+    url: req.originalUrl,
+    timestamp: new Date().toISOString()
+  });
+});
+
+router.all('/:id/test-update-payment', (req, res) => {
+  console.log('🔧 Test update-payment route hit:', req.method, req.originalUrl);
+  res.json({
+    success: true,
+    message: 'Update payment route is reachable',
+    bookingId: req.params.id,
+    timestamp: new Date().toISOString()
+  });
+});
+
 // 🆕 PUT /api/bookings/:id/update-payment - Update booking after payment
-// ⚠️ IMPORTANT: This route must be defined BEFORE the generic /:id route
+// ⚠️ CRITICAL: This route MUST be defined BEFORE the GET /:id route
 router.put('/:id/update-payment', auth, userOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -649,7 +671,7 @@ router.put('/:id/update-payment', auth, userOnly, async (req, res) => {
           // Customer success notification
           const customerNotification = new Notification({
             userId: req.user.userId,
-            type: 'booking_confirmed',
+            type: 'booking_confirmed',  // ✅ Valid enum value
             title: '🎉 Payment Successful - Booking Confirmed!',
             message: `Your booking for "${zone.name}" is now confirmed. Payment ID: ${razorpay_payment_id}`,
             priority: 'high',
@@ -709,11 +731,11 @@ router.put('/:id/update-payment', auth, userOnly, async (req, res) => {
         if (user) {
           const customerNotification = new Notification({
             userId: req.user.userId,
-            type: 'booking_payment_failed',
+            type: 'payment_failed',  // ✅ Use valid enum value
             title: '❌ Payment Failed - Booking Cancelled',
             message: `Payment for your booking "${booking.reference}" could not be processed. The booking has been cancelled.`,
             priority: 'high',
-            category: 'booking',
+            category: 'payment',  // ✅ Use payment category
             data: {
               bookingId: booking._id.toString(),
               reference: booking.reference,

@@ -16,9 +16,33 @@ const notificationSchema = new mongoose.Schema({
       'booking_cancelled',
       'booking_reminder',
       'payment_success',
+      'booking_payment_failed',    
+      'booking_payment_success',
+      
+      'payment_received',
       'payment_failed',
-      'zone_update',
-      'system_announcement'
+      'payment_refunded',
+      'payment_pending',
+      
+      'system_announcement',
+      'system_maintenance',
+      'system_update',
+
+
+       // User related
+       'profile_updated',
+       'welcome_message',
+
+
+       // Zone related
+      'zone_created',
+      'zone_updated',
+      'zone_deleted',
+
+       // General
+       'general_notification',
+       'promotional_offer',
+       'feedback_request'
     ],
     required: true
   },
