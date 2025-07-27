@@ -67,7 +67,7 @@ router.post('/create-order', auth, userOnly, async (req, res) => {
       notes: {
         bookingId: bookingId || '',
         userId: req.user?.userId || '',
-        orderType: 'gaming_zone_booking',
+        orderType: 'gaming_zone_booking', 
         createdAt: new Date().toISOString()
       }
     };
