@@ -1,4 +1,4 @@
-// models/GameZone.js - Safe GameZone Model with Null Checks
+// models/GameZone.js - Updated with Games and Individual Pricing
 const mongoose = require('mongoose');
 
 const gameZoneSchema = new mongoose.Schema({
@@ -74,6 +74,7 @@ const gameZoneSchema = new mongoose.Schema({
       default: 'United States'
     }
   },
+  // Updated: Now amenities are just general features
   amenities: {
     type: [String],
     required: [true, 'At least one amenity is required'],
@@ -84,11 +85,81 @@ const gameZoneSchema = new mongoose.Schema({
       message: 'At least one amenity must be specified'
     }
   },
-  pricePerHour: {
+  // NEW: Games with individual pricing
+  games: [{
+    name: {
+      type: String,
+      required: [true, 'Game name is required'],
+      trim: true,
+      maxlength: [100, 'Game name cannot exceed 100 characters']
+    },
+    category: {
+      type: String,
+      required: [true, 'Game category is required'],
+      enum: [
+        'PC Games',
+        'Console Games',
+        'VR Games',
+        'Arcade Games',
+        'Racing Simulators',
+        'Flight Simulators',
+        'Board Games',
+        'Card Games',
+        'Retro Games',
+        'Mobile Games'
+      ]
+    },
+    platform: {
+      type: String,
+      enum: ['PC', 'PlayStation', 'Xbox', 'Nintendo', 'VR', 'Arcade', 'Mobile', 'Tabletop', 'Multi-Platform'],
+      required: true
+    },
+    pricePerHour: {
+      type: Number,
+      required: [true, 'Game price per hour is required'],
+      min: [1, 'Price per hour must be at least $1'],
+      max: [100, 'Price per hour cannot exceed $100']
+    },
+    description: {
+      type: String,
+      maxlength: [500, 'Game description cannot exceed 500 characters']
+    },
+    minimumPlayers: {
+      type: Number,
+      default: 1,
+      min: [1, 'Minimum players must be at least 1']
+    },
+    maximumPlayers: {
+      type: Number,
+      default: 1,
+      min: [1, 'Maximum players must be at least 1']
+    },
+    ageRating: {
+      type: String,
+      enum: ['E (Everyone)', 'E10+ (Everyone 10+)', 'T (Teen)', 'M (Mature)', 'AO (Adults Only)', 'Not Rated'],
+      default: 'Not Rated'
+    },
+    available: {
+      type: Boolean,
+      default: true
+    },
+    equipment: {
+      type: String,
+      enum: ['Provided', 'Bring Your Own', 'Optional'],
+      default: 'Provided'
+    },
+    popularity: {
+      type: Number,
+      default: 0,
+      min: 0
+    }
+  }],
+  // Base price for general zone usage (without specific games)
+  basePricePerHour: {
     type: Number,
-    required: [true, 'Price per hour is required'],
-    min: [1, 'Price per hour must be at least $1'],
-    max: [500, 'Price per hour cannot exceed $500']
+    required: [true, 'Base price per hour is required'],
+    min: [1, 'Base price per hour must be at least $1'],
+    max: [500, 'Base price per hour cannot exceed $500']
   },
   images: {
     type: [String],
@@ -314,10 +385,12 @@ gameZoneSchema.index({ 'location.coordinates': '2dsphere' });
 
 // Create compound indexes for better query performance
 gameZoneSchema.index({ isActive: 1, rating: -1 });
-gameZoneSchema.index({ isActive: 1, pricePerHour: 1 });
+gameZoneSchema.index({ isActive: 1, basePricePerHour: 1 });
 gameZoneSchema.index({ isActive: 1, 'location.city': 1 });
 gameZoneSchema.index({ vendorId: 1, isActive: 1 });
 gameZoneSchema.index({ gameTypes: 1, isActive: 1 });
+gameZoneSchema.index({ 'games.category': 1, isActive: 1 });
+gameZoneSchema.index({ 'games.platform': 1, isActive: 1 });
 
 // Text search index
 gameZoneSchema.index({
@@ -325,7 +398,8 @@ gameZoneSchema.index({
   description: 'text',
   'location.address': 'text',
   'location.city': 'text',
-  amenities: 'text'
+  amenities: 'text',
+  'games.name': 'text'
 });
 
 // SAFE Pre-save validation for operating hours with null checks
@@ -497,14 +571,27 @@ gameZoneSchema.methods.getAvailableTimeSlots = async function(date) {
   }
 };
 
-// SAFE Method to calculate price for a booking
-gameZoneSchema.methods.calculatePrice = function(duration, date, timeSlot) {
+// UPDATED: Method to calculate price for a booking with game selection
+gameZoneSchema.methods.calculatePrice = function(duration, date, timeSlot, selectedGames = []) {
   try {
-    if (!duration || !this.pricePerHour) {
+    if (!duration) {
       return 0;
     }
     
-    let basePrice = this.pricePerHour * duration;
+    let totalPrice = 0;
+    
+    // If specific games are selected, calculate their total price
+    if (selectedGames && selectedGames.length > 0) {
+      for (const gameId of selectedGames) {
+        const game = this.games.id(gameId);
+        if (game && game.available) {
+          totalPrice += (game.pricePerHour * duration);
+        }
+      }
+    } else {
+      // Use base price if no specific games are selected
+      totalPrice = this.basePricePerHour * duration;
+    }
     
     // Apply pricing tiers if any
     if (this.pricingTiers && Array.isArray(this.pricingTiers) && this.pricingTiers.length > 0) {
@@ -543,16 +630,50 @@ gameZoneSchema.methods.calculatePrice = function(duration, date, timeSlot) {
         }
         
         if (applies && tier.multiplier) {
-          basePrice *= tier.multiplier;
+          totalPrice *= tier.multiplier;
           break; // Apply only the first matching tier
         }
       }
     }
     
-    return Math.round(basePrice * 100) / 100; // Round to 2 decimal places
+    return Math.round(totalPrice * 100) / 100; // Round to 2 decimal places
   } catch (error) {
     console.error('Error calculating price:', error);
-    return this.pricePerHour * (duration || 1);
+    return this.basePricePerHour * (duration || 1);
+  }
+};
+
+// NEW: Method to get available games
+gameZoneSchema.methods.getAvailableGames = function(category = null, platform = null) {
+  try {
+    let availableGames = this.games.filter(game => game.available);
+    
+    if (category) {
+      availableGames = availableGames.filter(game => game.category === category);
+    }
+    
+    if (platform) {
+      availableGames = availableGames.filter(game => game.platform === platform);
+    }
+    
+    return availableGames;
+  } catch (error) {
+    console.error('Error getting available games:', error);
+    return [];
+  }
+};
+
+// NEW: Method to get games by price range
+gameZoneSchema.methods.getGamesByPriceRange = function(minPrice, maxPrice) {
+  try {
+    return this.games.filter(game => 
+      game.available && 
+      game.pricePerHour >= minPrice && 
+      game.pricePerHour <= maxPrice
+    );
+  } catch (error) {
+    console.error('Error getting games by price range:', error);
+    return [];
   }
 };
 
@@ -608,6 +729,21 @@ gameZoneSchema.methods.incrementBookingStats = function(status, amount) {
   }
 };
 
+// NEW: Method to update game popularity
+gameZoneSchema.methods.updateGamePopularity = function(gameId) {
+  try {
+    const game = this.games.id(gameId);
+    if (game) {
+      game.popularity = (game.popularity || 0) + 1;
+      return this.save();
+    }
+    return Promise.resolve(this);
+  } catch (error) {
+    console.error('Error updating game popularity:', error);
+    return Promise.reject(error);
+  }
+};
+
 // Static method to find zones near a location
 gameZoneSchema.statics.findNearby = function(longitude, latitude, maxDistance = 50000) {
   return this.find({
@@ -636,6 +772,16 @@ gameZoneSchema.statics.searchZones = function(query, filters = {}) {
   }
   
   return this.find(searchQuery);
+};
+
+// NEW: Static method to find zones with specific games
+gameZoneSchema.statics.findByGame = function(gameName, filters = {}) {
+  return this.find({
+    isActive: true,
+    'games.name': new RegExp(gameName, 'i'),
+    'games.available': true,
+    ...filters
+  });
 };
 
 // SAFE Virtual for average rating display
@@ -702,6 +848,43 @@ gameZoneSchema.virtual('primaryImage').get(function() {
   } catch (error) {
     console.error('Error getting primary image:', error);
     return null;
+  }
+});
+
+// NEW: Virtual for price range
+gameZoneSchema.virtual('priceRange').get(function() {
+  try {
+    if (!this.games || this.games.length === 0) {
+      return { min: this.basePricePerHour, max: this.basePricePerHour };
+    }
+    
+    const prices = this.games.filter(game => game.available).map(game => game.pricePerHour);
+    prices.push(this.basePricePerHour);
+    
+    return {
+      min: Math.min(...prices),
+      max: Math.max(...prices)
+    };
+  } catch (error) {
+    console.error('Error calculating price range:', error);
+    return { min: this.basePricePerHour, max: this.basePricePerHour };
+  }
+});
+
+// NEW: Virtual for most popular games
+gameZoneSchema.virtual('popularGames').get(function() {
+  try {
+    if (!this.games || this.games.length === 0) {
+      return [];
+    }
+    
+    return this.games
+      .filter(game => game.available)
+      .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
+      .slice(0, 5);
+  } catch (error) {
+    console.error('Error getting popular games:', error);
+    return [];
   }
 });
 

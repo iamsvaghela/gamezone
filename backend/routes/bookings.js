@@ -313,7 +313,7 @@ router.get('/:id', auth, userOnly, async (req, res) => {
 // POST /api/bookings - Create new booking (NEW PAYMENT FLOW)
 router.post('/', auth, userOnly, async (req, res) => {
   try {
-    const { zoneId, date, timeSlot, duration, notes } = req.body;
+    const { zoneId, date, timeSlot, duration, notes, bookingType, selectedGames } = req.body;
     
     console.log('🔄 Creating booking (new flow):', { zoneId, date, timeSlot, duration, userId: req.user.userId });
     
@@ -397,8 +397,34 @@ router.post('/', auth, userOnly, async (req, res) => {
       });
     }
 
-    // Calculate total amount
-    const totalAmount = zone.pricePerHour * duration;
+     // Calculate total amount based on booking type
+     let totalAmount = 0;
+     let gamesSummary = [];
+ 
+     if (bookingType === 'games' && selectedGames) {
+       // Calculate total from selected games
+       selectedGames.forEach(game => {
+         const gameTotal = game.hours * game.pricePerHour;
+         totalAmount += gameTotal;
+         gamesSummary.push({
+           gameId: game.gameId,
+           gameName: game.gameName,
+           hours: game.hours,
+           pricePerHour: game.pricePerHour,
+           subtotal: gameTotal
+         });
+       });
+ 
+       console.log('💰 Games booking total:', {
+         totalGames: selectedGames.length,
+         totalAmount,
+         gamesSummary
+       });
+     } else {
+       // Default zone-based pricing
+       totalAmount = zone.pricePerHour * duration;
+       console.log('💰 Zone booking total:', { zonePrice: zone.pricePerHour, duration, totalAmount });
+     }
 
     // 🆕 NEW FLOW: Create booking with pending_payment status
     const booking = new Booking({
