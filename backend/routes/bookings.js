@@ -737,7 +737,7 @@ router.put('/:id/update-payment', auth, userOnly, async (req, res) => {
           if (zone && zone.vendorId) {
             const vendorNotification = new Notification({
               userId: zone.vendorId._id,
-              type: 'review_required',
+              type: 'booking_created',
               title: '💰 Booking Confirmation Required',
               message: `Booking  confirmation for ${user.name}'s booking at "${zone.name}".`,
               priority: 'medium',
@@ -746,7 +746,9 @@ router.put('/:id/update-payment', auth, userOnly, async (req, res) => {
                 bookingId: booking._id.toString(),
                 reference: booking.reference,
                 customerName: user.name,
-                paymentId: razorpay_payment_id
+                paymentId: razorpay_payment_id,
+                bookingAction:"review_required",
+                userType:"vendor"
               }
             });
             
