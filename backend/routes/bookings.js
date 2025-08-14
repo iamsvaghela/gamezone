@@ -697,7 +697,7 @@ router.put('/:id/update-payment', auth, userOnly, async (req, res) => {
           // Customer success notification
           const customerNotification = new Notification({
             userId: req.user.userId,
-            type: 'booking_confirmed',  // ✅ Valid enum value
+            type: 'payment_received',  // ✅ Valid enum value
             title: '🎉 Payment Successful - Booking Confirmed!',
             message: `Your booking for "${zone.name}" is now confirmed. Payment ID: ${razorpay_payment_id}`,
             priority: 'high',
@@ -732,6 +732,26 @@ router.put('/:id/update-payment', auth, userOnly, async (req, res) => {
             
             await vendorNotification.save();
             console.log('✅ Vendor success notification created');
+          }
+
+          if (zone && zone.vendorId) {
+            const vendorNotification = new Notification({
+              userId: zone.vendorId._id,
+              type: 'review_required',
+              title: '💰 Booking Confirmation Required',
+              message: `Booking  confirmation for ${user.name}'s booking at "${zone.name}".`,
+              priority: 'medium',
+              category: 'booking',
+              data: {
+                bookingId: booking._id.toString(),
+                reference: booking.reference,
+                customerName: user.name,
+                paymentId: razorpay_payment_id
+              }
+            });
+            
+            await vendorNotification.save();
+            console.log('✅ Vendor confirmation notification created');
           }
         }
       } catch (notificationError) {
