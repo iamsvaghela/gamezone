@@ -278,7 +278,7 @@ router.put('/bookings/:id/decline', async (req, res) => {
     }
     
     // FIXED: Comprehensive status check
-    if (booking.status !== 'pending') {
+    if (booking.status !== 'review_required') {
       return res.status(400).json({
         success: false,
         error: `Cannot decline booking with status: ${booking.status}. Only pending bookings can be declined.`,
