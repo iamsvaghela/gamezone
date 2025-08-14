@@ -122,7 +122,7 @@ router.put('/bookings/:id/confirm', async (req, res) => {
     
     // Update booking status
     booking.status = 'confirmed';
-    booking.paymentStatus = 'paid';
+    booking.paymentStatus = 'completed';
     booking.confirmedAt = new Date();
     booking.confirmedBy = vendorId;
     
