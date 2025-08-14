@@ -674,7 +674,7 @@ router.put('/:id/update-payment', auth, userOnly, async (req, res) => {
     
     if (paymentStatus === 'success') {
       // Payment successful - confirm booking
-      booking.status = 'confirmed';
+      booking.status = 'review_required';
       booking.paymentStatus = 'completed';
       booking.paymentId = razorpay_payment_id || paymentId;
       booking.orderId = razorpay_order_id || orderId;

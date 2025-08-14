@@ -113,7 +113,7 @@ router.put('/bookings/:id/confirm', async (req, res) => {
     }
     
     // FIXED: Check if booking can be confirmed
-    if (booking.status !== 'pending') {
+    if (booking.status !== 'review_required') {
       return res.status(400).json({
         success: false,
         error: `Cannot confirm booking with status: ${booking.status}. Only pending bookings can be confirmed.`
