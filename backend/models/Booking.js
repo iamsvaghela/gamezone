@@ -71,7 +71,8 @@ const bookingSchema = new mongoose.Schema({
         'payment_failed',   // 🆕 Payment failed, booking cancelled
         'completed',        // Booking session completed
         'cancelled',        // Booking cancelled by user
-        'no_show'          // User didn't show up
+        'no_show',
+        'review_required'       // User didn't show up
       ],
       message: 'Status must be one of: pending_payment, confirmed, payment_failed, completed, cancelled, no_show'
     },
