@@ -1,4 +1,4 @@
-// controllers/bookingController.js - FIXED VERSION
+// controllers/bookingController.js - Complete updated version with FCM integration
 const Booking = require('../models/Booking');
 const GameZone = require('../models/GameZone');
 const User = require('../models/User');
@@ -15,7 +15,7 @@ try {
   console.error('❌ BookingController: Failed to load Notification model:', error);
 }
 
-// Enhanced createBooking with FIXED notification creation
+// Enhanced createBooking with FCM notification integration
 const createBooking = async (req, res) => {
   console.log('🚀 createBooking function started');
   
@@ -53,7 +53,6 @@ const createBooking = async (req, res) => {
       });
     }
     
-    // [Previous validation logic remains the same...]
     // Calculate total amount
     const totalAmount = zone.pricePerHour * duration;
     
@@ -101,8 +100,8 @@ const createBooking = async (req, res) => {
       $set: { lastBookingAt: new Date() }
     });
     
-    // 🔧 FIXED NOTIFICATION CREATION - Use direct model creation instead of service
-    console.log('📢 === STARTING NOTIFICATION CREATION (FIXED VERSION) ===');
+    // 🔧 ENHANCED NOTIFICATION CREATION with FCM Push Notifications
+    console.log('📢 === STARTING ENHANCED NOTIFICATION CREATION WITH FCM ===');
     
     let notificationResults = {
       customerNotification: null,
@@ -116,9 +115,9 @@ const createBooking = async (req, res) => {
         throw new Error('Notification model not loaded');
       }
       
-      console.log('📢 Step 1: Creating customer notification...');
+      console.log('📢 Step 1: Creating customer notification with FCM data...');
       
-      // Create customer notification DIRECTLY with the model
+      // Create customer notification with enhanced FCM-ready data
       const customerNotificationData = {
         userId: new mongoose.Types.ObjectId(userId),
         type: 'booking_created',
@@ -137,6 +136,10 @@ const createBooking = async (req, res) => {
           totalAmount: booking.totalAmount,
           status: booking.status,
           customerName: user.name,
+          // FCM-specific data for role filtering
+          userType: 'customer',
+          notificationFor: 'customer',
+          isCustomerNotification: true,
           createdFrom: 'booking_creation'
         },
         actions: [
@@ -149,22 +152,16 @@ const createBooking = async (req, res) => {
         ]
       };
       
-      console.log('📢 Customer notification data:', JSON.stringify(customerNotificationData, null, 2));
-      
-      // Use direct model creation
+      // Use direct model creation for customer notification
       const customerNotification = new Notification(customerNotificationData);
       await customerNotification.save();
       
       console.log('✅ Customer notification created:', customerNotification._id);
       notificationResults.customerNotification = customerNotification;
       
-      // Verify it was saved
-      const customerCheck = await Notification.findById(customerNotification._id);
-      console.log('🔍 Customer notification verification:', customerCheck ? 'FOUND' : 'NOT FOUND');
-      
       // Create vendor notification if vendor exists
       if (zone.vendorId && zone.vendorId._id) {
-        console.log('📢 Step 2: Creating vendor notification for:', zone.vendorId._id);
+        console.log('📢 Step 2: Creating vendor notification with FCM data for:', zone.vendorId._id);
         
         const vendorNotificationData = {
           userId: new mongoose.Types.ObjectId(zone.vendorId._id),
@@ -185,6 +182,10 @@ const createBooking = async (req, res) => {
             duration: booking.duration,
             totalAmount: booking.totalAmount,
             status: booking.status,
+            // FCM-specific data for role filtering
+            userType: 'vendor',
+            notificationFor: 'business',
+            isVendorNotification: true,
             createdFrom: 'booking_creation'
           },
           actions: [
@@ -203,42 +204,33 @@ const createBooking = async (req, res) => {
           ]
         };
         
-        console.log('📢 Vendor notification data:', JSON.stringify(vendorNotificationData, null, 2));
-        
         const vendorNotification = new Notification(vendorNotificationData);
         await vendorNotification.save();
         
         console.log('✅ Vendor notification created:', vendorNotification._id);
         notificationResults.vendorNotification = vendorNotification;
-        
-        // Verify it was saved
-        const vendorCheck = await Notification.findById(vendorNotification._id);
-        console.log('🔍 Vendor notification verification:', vendorCheck ? 'FOUND' : 'NOT FOUND');
       }
       
-      // Final verification - count all notifications
-      const totalNotifications = await Notification.countDocuments();
-      console.log('📊 Total notifications in database after creation:', totalNotifications);
-      
-      // Try to use NotificationService for real-time and push notifications (non-blocking)
+      // 🔧 NEW: Send FCM Push Notifications using Enhanced NotificationService
       try {
+        // Send push notification to customer
         if (notificationResults.customerNotification) {
-          console.log('📡 Attempting real-time notification for customer...');
-          await NotificationService.sendRealTimeNotification(notificationResults.customerNotification);
+          console.log('📡 Sending FCM push notification to customer...');
           await NotificationService.sendPushNotificationToUser(userId, notificationResults.customerNotification);
         }
         
+        // Send push notification to vendor
         if (notificationResults.vendorNotification && zone.vendorId) {
-          console.log('📡 Attempting real-time notification for vendor...');
-          await NotificationService.sendRealTimeNotification(notificationResults.vendorNotification);
+          console.log('📡 Sending FCM push notification to vendor...');
           await NotificationService.sendPushNotificationToUser(zone.vendorId._id, notificationResults.vendorNotification);
         }
-      } catch (realtimeError) {
-        console.warn('⚠️ Real-time/Push notification failed (non-critical):', realtimeError.message);
-        // Don't fail the booking creation for real-time notification failures
+      } catch (fcmError) {
+        console.warn('⚠️ FCM Push notification failed (non-critical):', fcmError.message);
+        notificationResults.errors.push(`FCM Error: ${fcmError.message}`);
+        // Don't fail the booking creation for FCM notification failures
       }
       
-      console.log('🎉 === NOTIFICATION CREATION COMPLETED SUCCESSFULLY ===');
+      console.log('🎉 === ENHANCED NOTIFICATION CREATION WITH FCM COMPLETED ===');
       
     } catch (notificationError) {
       console.error('❌ === NOTIFICATION CREATION FAILED ===');
@@ -252,7 +244,7 @@ const createBooking = async (req, res) => {
       console.warn('⚠️ Booking created successfully but notifications failed');
     }
     
-    // Return response
+    // Return response (unchanged from original)
     console.log('✅ Preparing response...');
     
     const response = {
@@ -313,123 +305,155 @@ const createBooking = async (req, res) => {
   }
 };
 
-// 🔧 ALTERNATIVE: Enhanced NotificationService method for booking creation
-class EnhancedNotificationService extends NotificationService {
+// 🔧 NEW: Enhanced NotificationService static method for FCM integration
+const sendBookingNotifications = async (booking, zone, user) => {
+  console.log('📢 Enhanced: Creating booking notifications with FCM...');
   
-  static async createBookingNotifications(booking, zone, user) {
-    console.log('📢 Enhanced: Creating booking notifications...');
+  const results = {
+    customer: null,
+    vendor: null,
+    errors: []
+  };
+  
+  try {
+    // Import required services
+    const Notification = require('../models/Notification');
+    const firebaseService = require('../services/FirebaseService');
     
-    const results = {
-      customer: null,
-      vendor: null,
-      errors: []
-    };
-    
+    // Create customer notification
     try {
-      // Import Notification model
-      const Notification = require('../models/Notification');
+      const customerData = {
+        userId: new mongoose.Types.ObjectId(booking.userId),
+        type: 'booking_created',
+        title: '🎮 Booking Created!',
+        message: `Your booking for ${zone.name} on ${booking.date.toLocaleDateString()} at ${booking.timeSlot} is pending confirmation.`,
+        priority: 'medium',
+        category: 'booking',
+        data: {
+          bookingId: booking._id.toString(),
+          reference: booking.reference,
+          zoneId: booking.zoneId.toString(),
+          zoneName: zone.name,
+          date: booking.date.toISOString(),
+          timeSlot: booking.timeSlot,
+          duration: booking.duration,
+          totalAmount: booking.totalAmount,
+          userType: 'customer',
+          isCustomerNotification: true
+        },
+        actions: [
+          {
+            type: 'view',
+            label: 'View Booking',
+            endpoint: `/api/bookings/${booking._id}`,
+            method: 'GET'
+          }
+        ]
+      };
       
-      // Create customer notification
+      const customerNotification = new Notification(customerData);
+      await customerNotification.save();
+      results.customer = customerNotification;
+      
+      // Send FCM to customer
+      const customerUser = await User.findById(booking.userId);
+      if (customerUser && customerUser.fcmTokens && customerUser.fcmTokens.length > 0) {
+        const customerTokens = customerUser.getActiveFCMTokens();
+        if (customerTokens.length > 0) {
+          const customerPayload = {
+            title: customerNotification.title,
+            body: customerNotification.message,
+            type: customerNotification.type,
+            data: customerNotification.data
+          };
+          await firebaseService.sendToMultipleDevices(customerTokens, customerPayload);
+        }
+      }
+      
+      console.log('✅ Enhanced: Customer notification with FCM created');
+      
+    } catch (customerError) {
+      console.error('❌ Enhanced: Customer notification failed:', customerError);
+      results.errors.push(`Customer notification: ${customerError.message}`);
+    }
+    
+    // Create vendor notification
+    if (zone.vendorId) {
       try {
-        const customerData = {
-          userId: new mongoose.Types.ObjectId(booking.userId),
+        const vendorData = {
+          userId: new mongoose.Types.ObjectId(zone.vendorId._id),
           type: 'booking_created',
-          title: '🎮 Booking Created!',
-          message: `Your booking for ${zone.name} on ${booking.date.toLocaleDateString()} at ${booking.timeSlot} is pending confirmation.`,
-          priority: 'medium',
+          title: '📋 New Booking Request',
+          message: `${user.name} wants to book ${zone.name} on ${booking.date.toLocaleDateString()} at ${booking.timeSlot}.`,
+          priority: 'high',
           category: 'booking',
           data: {
             bookingId: booking._id.toString(),
             reference: booking.reference,
             zoneId: booking.zoneId.toString(),
             zoneName: zone.name,
+            customerName: user.name,
+            customerEmail: user.email,
             date: booking.date.toISOString(),
             timeSlot: booking.timeSlot,
             duration: booking.duration,
-            totalAmount: booking.totalAmount
+            totalAmount: booking.totalAmount,
+            userType: 'vendor',
+            isVendorNotification: true
           },
           actions: [
             {
-              type: 'view',
-              label: 'View Booking',
-              endpoint: `/api/bookings/${booking._id}`,
-              method: 'GET'
+              type: 'confirm',
+              label: 'Confirm Booking',
+              endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
+              method: 'PUT'
+            },
+            {
+              type: 'decline',
+              label: 'Decline Booking',
+              endpoint: `/api/vendor/bookings/${booking._id}/decline`,
+              method: 'PUT'
             }
           ]
         };
         
-        const customerNotification = new Notification(customerData);
-        await customerNotification.save();
-        results.customer = customerNotification;
+        const vendorNotification = new Notification(vendorData);
+        await vendorNotification.save();
+        results.vendor = vendorNotification;
         
-        console.log('✅ Enhanced: Customer notification created');
-        
-      } catch (customerError) {
-        console.error('❌ Enhanced: Customer notification failed:', customerError);
-        results.errors.push(`Customer notification: ${customerError.message}`);
-      }
-      
-      // Create vendor notification
-      if (zone.vendorId) {
-        try {
-          const vendorData = {
-            userId: new mongoose.Types.ObjectId(zone.vendorId._id),
-            type: 'booking_created',
-            title: '📋 New Booking Request',
-            message: `${user.name} wants to book ${zone.name} on ${booking.date.toLocaleDateString()} at ${booking.timeSlot}.`,
-            priority: 'high',
-            category: 'booking',
-            data: {
-              bookingId: booking._id.toString(),
-              reference: booking.reference,
-              zoneId: booking.zoneId.toString(),
-              zoneName: zone.name,
-              customerName: user.name,
-              customerEmail: user.email,
-              date: booking.date.toISOString(),
-              timeSlot: booking.timeSlot,
-              duration: booking.duration,
-              totalAmount: booking.totalAmount
-            },
-            actions: [
-              {
-                type: 'confirm',
-                label: 'Confirm Booking',
-                endpoint: `/api/vendor/bookings/${booking._id}/confirm`,
-                method: 'PUT'
-              },
-              {
-                type: 'decline',
-                label: 'Decline Booking',
-                endpoint: `/api/vendor/bookings/${booking._id}/decline`,
-                method: 'PUT'
-              }
-            ]
-          };
-          
-          const vendorNotification = new Notification(vendorData);
-          await vendorNotification.save();
-          results.vendor = vendorNotification;
-          
-          console.log('✅ Enhanced: Vendor notification created');
-          
-        } catch (vendorError) {
-          console.error('❌ Enhanced: Vendor notification failed:', vendorError);
-          results.errors.push(`Vendor notification: ${vendorError.message}`);
+        // Send FCM to vendor
+        const vendorUser = await User.findById(zone.vendorId._id);
+        if (vendorUser && vendorUser.fcmTokens && vendorUser.fcmTokens.length > 0) {
+          const vendorTokens = vendorUser.getActiveFCMTokens();
+          if (vendorTokens.length > 0) {
+            const vendorPayload = {
+              title: vendorNotification.title,
+              body: vendorNotification.message,
+              type: vendorNotification.type,
+              data: vendorNotification.data
+            };
+            await firebaseService.sendToMultipleDevices(vendorTokens, vendorPayload);
+          }
         }
+        
+        console.log('✅ Enhanced: Vendor notification with FCM created');
+        
+      } catch (vendorError) {
+        console.error('❌ Enhanced: Vendor notification failed:', vendorError);
+        results.errors.push(`Vendor notification: ${vendorError.message}`);
       }
-      
-      return results;
-      
-    } catch (error) {
-      console.error('❌ Enhanced: Booking notifications failed:', error);
-      results.errors.push(`General error: ${error.message}`);
-      return results;
     }
+    
+    return results;
+    
+  } catch (error) {
+    console.error('❌ Enhanced: Booking notifications failed:', error);
+    results.errors.push(`General error: ${error.message}`);
+    return results;
   }
-}
+};
 
-// 🔧 DEBUGGING: Add a test endpoint to verify notification creation
+// 🔧 DEBUGGING: Test endpoint to verify notification creation (unchanged)
 const testNotificationCreation = async (req, res) => {
   try {
     console.log('🧪 Testing notification creation...');
@@ -449,7 +473,10 @@ const testNotificationCreation = async (req, res) => {
       data: {
         testNotification: true,
         createdFrom: 'booking_controller_test',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        // Add FCM test data
+        userType: 'customer',
+        isCustomerNotification: true
       }
     };
     
@@ -463,6 +490,14 @@ const testNotificationCreation = async (req, res) => {
     // Verify it exists
     const verification = await Notification.findById(notification._id);
     console.log('🔍 Verification result:', verification ? 'EXISTS' : 'NOT FOUND');
+    
+    // Try to send FCM test notification
+    try {
+      await NotificationService.sendPushNotificationToUser(userId, notification);
+      console.log('✅ FCM test notification sent');
+    } catch (fcmError) {
+      console.warn('⚠️ FCM test notification failed:', fcmError.message);
+    }
     
     res.json({
       success: true,
@@ -489,5 +524,5 @@ const testNotificationCreation = async (req, res) => {
 module.exports = {
   createBooking,
   testNotificationCreation,
-  EnhancedNotificationService
+  sendBookingNotifications
 };

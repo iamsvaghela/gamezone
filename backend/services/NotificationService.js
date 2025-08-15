@@ -363,6 +363,213 @@ class NotificationService {
     }
   }
 
+
+  // Send push notification to specific user
+static async sendPushNotificationToUser(userId, notification) {
+  try {
+    console.log('📱 Sending push notification to user:', userId);
+    
+    const User = require('../models/User');
+    const user = await User.findById(userId);
+    if (!user) {
+      console.warn('⚠️ User not found for push notification:', userId);
+      return { success: false, error: 'User not found' };
+    }
+    
+    // Check if user has push notifications enabled
+    if (!user.pushNotificationSettings?.enabled) {
+      console.log('⚠️ Push notifications disabled for user:', userId);
+      return { success: false, error: 'Push notifications disabled' };
+    }
+    
+    // Get active FCM tokens
+    const tokens = user.getActiveFCMTokens();
+    if (tokens.length === 0) {
+      console.log('⚠️ No active FCM tokens for user:', userId);
+      return { success: false, error: 'No active FCM tokens' };
+    }
+    
+    // Prepare push payload
+    const pushPayload = {
+      title: notification.title,
+      body: notification.message,
+      type: notification.type,
+      data: {
+        notificationId: notification._id.toString(),
+        category: notification.category,
+        priority: notification.priority,
+        actions: JSON.stringify(notification.actions || []),
+        ...notification.data
+      }
+    };
+    
+    // Send to multiple devices using your existing FirebaseService
+    const firebaseService = require('./FirebaseService');
+    const results = await firebaseService.sendToMultipleDevices(tokens, pushPayload);
+    
+    if (results.success) {
+      console.log(`✅ Push notification sent successfully: ${results.successCount}/${tokens.length}`);
+      
+      // Mark notification as sent
+      notification.sentAt = new Date();
+      await notification.save();
+      
+      return {
+        success: true,
+        sentCount: results.successCount,
+        failureCount: results.failureCount
+      };
+    } else {
+      console.error('❌ Push notification failed:', results.error);
+      return { success: false, error: results.error };
+    }
+    
+  } catch (error) {
+    console.error('❌ Error sending push notification:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+
+// Enhanced booking notification methods
+static async handleBookingCreated(booking, zone, user) {
+  try {
+    console.log('📢 Handling booking created notifications');
+    
+    const results = {
+      customer: null,
+      vendor: null,
+      errors: []
+    };
+    
+    // Customer notification
+    try {
+      const customerNotification = await this.createNotification(
+        booking.userId,
+        {
+          type: 'booking_created',
+          title: '🎮 Booking Created - Payment Required',
+          message: `Your booking for "${zone.name}" has been created. Please complete the payment within 30 minutes.`,
+          priority: 'high',
+          category: 'booking',
+          data: {
+            bookingId: booking._id.toString(),
+            reference: booking.reference,
+            zoneId: booking.zoneId.toString(),
+            zoneName: zone.name,
+            date: booking.date.toISOString(),
+            timeSlot: booking.timeSlot,
+            duration: booking.duration,
+            totalAmount: booking.totalAmount,
+            status: booking.status,
+            userType: 'customer',
+            isCustomerNotification: true
+          },
+          actions: [
+            {
+              type: 'view',
+              label: 'Complete Payment',
+              endpoint: `/api/bookings/${booking._id}`,
+              method: 'GET'
+            }
+          ]
+        },
+        true // Send push notification
+      );
+      
+      results.customer = customerNotification;
+      console.log('✅ Customer notification created for booking');
+      
+    } catch (customerError) {
+      console.error('❌ Customer notification failed:', customerError);
+      results.errors.push(`Customer notification: ${customerError.message}`);
+    }
+    
+    // Vendor notification (if zone has vendor)
+    if (zone.vendorId) {
+      try {
+        const vendorNotification = await this.createNotification(
+          zone.vendorId._id || zone.vendorId,
+          {
+            type: 'booking_created',
+            title: '📋 New Booking - Payment Pending',
+            message: `${user.name} has created a booking for "${zone.name}". Waiting for payment confirmation.`,
+            priority: 'medium',
+            category: 'booking',
+            data: {
+              bookingId: booking._id.toString(),
+              reference: booking.reference,
+              zoneId: booking.zoneId.toString(),
+              zoneName: zone.name,
+              customerName: user.name,
+              customerEmail: user.email,
+              date: booking.date.toISOString(),
+              timeSlot: booking.timeSlot,
+              duration: booking.duration,
+              totalAmount: booking.totalAmount,
+              status: booking.status,
+              userType: 'vendor',
+              isVendorNotification: true
+            },
+            actions: [
+              {
+                type: 'view',
+                label: 'View Booking Details',
+                endpoint: `/api/vendor/bookings/${booking._id}`,
+                method: 'GET'
+              }
+            ]
+          },
+          true // Send push notification
+        );
+        
+        results.vendor = vendorNotification;
+        console.log('✅ Vendor notification created for booking');
+        
+      } catch (vendorError) {
+        console.error('❌ Vendor notification failed:', vendorError);
+        results.errors.push(`Vendor notification: ${vendorError.message}`);
+      }
+    }
+    
+    return results;
+    
+  } catch (error) {
+    console.error('❌ Error handling booking created notifications:', error);
+    throw error;
+  }
+}
+
+// Create notification and send push (enhanced method)
+static async createNotification(userId, notificationData, sendPush = true) {
+  try {
+    console.log('📢 Creating notification for user:', userId);
+    
+    const Notification = require('../models/Notification');
+    
+    // Create notification in database
+    const notification = new Notification({
+      userId: new mongoose.Types.ObjectId(userId),
+      ...notificationData
+    });
+    
+    await notification.save();
+    console.log('✅ Notification created in database:', notification._id);
+    
+    // Send push notification if enabled
+    if (sendPush) {
+      await this.sendPushNotificationToUser(userId, notification);
+    }
+    
+    return notification;
+    
+  } catch (error) {
+    console.error('❌ Error creating notification:', error);
+    throw error;
+  }
+}
+
+
   // Schedule notification for later
   static async scheduleNotification(userId, notificationData, scheduledFor) {
     try {

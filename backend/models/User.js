@@ -82,6 +82,54 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
+
+
+const userSchemaAdditions = {
+  // FCM tokens for push notifications
+  fcmTokens: [{
+    token: { type: String, required: true, index: true },
+    device: { type: String, required: true },
+    platform: { type: String, enum: ['web', 'android', 'ios'], required: true },
+    userAgent: String,
+    isActive: { type: Boolean, default: true },
+    lastUsed: { type: Date, default: Date.now }
+  }],
+  
+  // Push notification preferences
+  pushNotificationSettings: {
+    enabled: { type: Boolean, default: true },
+    bookings: { type: Boolean, default: true },
+    payments: { type: Boolean, default: true },
+    system: { type: Boolean, default: true },
+    promotions: { type: Boolean, default: false }
+  }
+};
+
+
+
+userSchema.methods.addFCMToken = async function(tokenData) {
+  this.fcmTokens = this.fcmTokens.filter(t => t.token !== tokenData.token);
+  this.fcmTokens.push({
+    token: tokenData.token,
+    device: tokenData.device || 'Unknown',
+    platform: tokenData.platform || 'web',
+    userAgent: tokenData.userAgent,
+    lastUsed: new Date()
+  });
+  if (this.fcmTokens.length > 5) this.fcmTokens = this.fcmTokens.slice(-5);
+  return this.save();
+};
+
+
+userSchema.methods.removeFCMToken = async function(token) {
+  this.fcmTokens = this.fcmTokens.filter(t => t.token !== token);
+  return this.save();
+};
+
+userSchema.methods.getActiveFCMTokens = function() {
+  return this.fcmTokens.filter(t => t.isActive).map(t => t.token);
+};
+
 // Hash password before saving
 userSchema.pre('save', async function(next) {
   // Only hash if password is modified and exists
